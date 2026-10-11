@@ -3,83 +3,130 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ToiletTime</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚽</text></svg>">
+  <title>ToiletTime — Restroom ratings worldwide</title>
+  <meta name="description" content="Find and rate restrooms at stores, restaurants and cafés around the world.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.8l2.85 5.78 6.38.93-4.62 4.5 1.09 6.35L12 17.36l-5.7 3 1.09-6.35-4.62-4.5 6.38-.93z"/></symbol>
+  </svg>
+
   <header class="topbar">
-    <h1>🚽 ToiletTime</h1>
-    <p class="tagline">Rate bathrooms at stores &amp; restaurants around the world</p>
-    <button id="addBtn" class="primary">+ Add a bathroom</button>
+    <a class="brand" href="/">
+      <img src="favicon.svg" alt="" width="28" height="28">
+      <span>ToiletTime</span>
+    </a>
+    <div class="place-search">
+      <svg class="icon"><use href="#i-search"/></svg>
+      <input id="placeSearch" type="search" placeholder="Go to a city or address" aria-label="Go to a city or address">
+    </div>
+    <button id="addBtn" class="btn btn-primary">
+      <svg class="icon"><use href="#i-plus"/></svg><span>Add restroom</span>
+    </button>
   </header>
 
   <main class="layout">
     <aside class="sidebar">
-      <div class="filters">
-        <input id="search" type="search" placeholder="Search name, city, country…">
-        <div class="row">
-          <select id="typeFilter"><option value="">All places</option></select>
-          <select id="sort">
-            <option value="rating">Top rated</option>
-            <option value="worst">Worst rated</option>
-            <option value="reviews">Most reviewed</option>
-            <option value="newest">Newest</option>
-          </select>
+      <!-- List view -->
+      <section id="listView" class="view">
+        <div class="filters">
+          <div class="field-icon">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input id="search" type="search" placeholder="Filter by name, city or country" aria-label="Filter restrooms">
+          </div>
+          <div class="filter-row">
+            <select id="typeFilter" aria-label="Place type"><option value="">All place types</option></select>
+            <select id="sort" aria-label="Sort by">
+              <option value="rating">Highest rated</option>
+              <option value="worst">Lowest rated</option>
+              <option value="reviews">Most reviewed</option>
+              <option value="newest">Recently added</option>
+            </select>
+          </div>
         </div>
-        <div class="row">
-          <input id="placeSearch" type="search" placeholder="Jump to a city or place…">
-          <button id="locateBtn" title="Near me">📍</button>
+        <div class="list-head">
+          <span id="resultCount" class="muted"></span>
+          <button id="locateBtn" class="btn-link">
+            <svg class="icon"><use href="#i-locate"/></svg>Near me
+          </button>
         </div>
-      </div>
-      <ul id="list" class="list"></ul>
+        <ul id="list" class="list"></ul>
+      </section>
+
+      <!-- Detail view -->
+      <section id="detailView" class="view" hidden>
+        <div class="detail-nav">
+          <button id="backBtn" class="btn-link"><svg class="icon"><use href="#i-back"/></svg>All restrooms</button>
+        </div>
+        <div id="detailBody" class="detail"></div>
+      </section>
     </aside>
-    <section id="map" class="map"></section>
+    <section id="map" class="map" aria-label="Map"></section>
   </main>
 
-  <!-- Bathroom detail -->
-  <dialog id="detail" class="modal">
-    <button class="close" data-close>×</button>
-    <div id="detailBody"></div>
-    <hr>
-    <h3>Leave a rating</h3>
-    <form id="reviewForm" class="form"></form>
-  </dialog>
-
-  <!-- Add bathroom -->
+  <!-- Add restroom -->
   <dialog id="addDialog" class="modal">
-    <button class="close" data-close>×</button>
-    <h2>Add a bathroom</h2>
-    <p class="hint">Tip: click anywhere on the map to drop a pin, or search for the place below.</p>
-    <form id="addForm" class="form">
-      <div class="row">
-        <input name="lookup" id="lookup" placeholder="Search for the store/restaurant (optional)">
-        <button type="button" id="lookupBtn">Find</button>
+    <form id="addForm" class="modal-inner" novalidate>
+      <header class="modal-head">
+        <h2>Add a restroom</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+      </header>
+
+      <div class="modal-body">
+        <fieldset>
+          <legend>Location</legend>
+          <div class="field-icon">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input id="lookup" placeholder="Search for a business or address" autocomplete="off">
+          </div>
+          <ul id="lookupResults" class="lookup-results"></ul>
+          <p class="help">Or click the map to set the location manually.</p>
+          <label class="field">Business name
+            <input name="name" required maxlength="100">
+          </label>
+          <div class="grid-2">
+            <label class="field">Type<select name="type" id="addType"></select></label>
+            <label class="field">Street address<input name="address" maxlength="200"></label>
+            <label class="field">City<input name="city" maxlength="80"></label>
+            <label class="field">Country<input name="country" maxlength="80"></label>
+            <label class="field">Latitude<input name="lat" type="number" step="any" required min="-90" max="90"></label>
+            <label class="field">Longitude<input name="lng" type="number" step="any" required min="-180" max="180"></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Amenities</legend>
+          <div class="checks">
+            <label class="check"><input type="checkbox" name="free" checked><span>Free to use</span></label>
+            <label class="check"><input type="checkbox" name="accessible"><span>Wheelchair accessible</span></label>
+            <label class="check"><input type="checkbox" name="babyChanging"><span>Baby changing station</span></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Your review</legend>
+          <div id="addRating"></div>
+        </fieldset>
       </div>
-      <ul id="lookupResults" class="lookup-results"></ul>
-      <label>Place name* <input name="name" required maxlength="100" placeholder="e.g. Joe's Pizza"></label>
-      <label>Type
-        <select name="type" id="addType"></select>
-      </label>
-      <label>Address <input name="address" maxlength="200"></label>
-      <div class="row">
-        <label>City <input name="city" maxlength="80"></label>
-        <label>Country <input name="country" maxlength="80"></label>
-      </div>
-      <div class="row">
-        <label>Latitude* <input name="lat" type="number" step="any" required min="-90" max="90"></label>
-        <label>Longitude* <input name="lng" type="number" step="any" required min="-180" max="180"></label>
-      </div>
-      <div class="checks">
-        <label><input type="checkbox" name="free" checked> Free to use</label>
-        <label><input type="checkbox" name="accessible"> Wheelchair accessible</label>
-        <label><input type="checkbox" name="babyChanging"> Baby changing</label>
-      </div>
-      <h3>Your rating</h3>
-      <div id="addRating"></div>
-      <p id="addError" class="error"></p>
-      <button class="primary" type="submit">Add bathroom</button>
+
+      <footer class="modal-foot">
+        <p id="addError" class="error" role="alert"></p>
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Publish</button>
+      </footer>
     </form>
   </dialog>
 
