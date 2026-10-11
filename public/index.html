@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ToiletTime</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚽</text></svg>">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>🚽 ToiletTime</h1>
+    <p class="tagline">Rate bathrooms at stores &amp; restaurants around the world</p>
+    <button id="addBtn" class="primary">+ Add a bathroom</button>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="filters">
+        <input id="search" type="search" placeholder="Search name, city, country…">
+        <div class="row">
+          <select id="typeFilter"><option value="">All places</option></select>
+          <select id="sort">
+            <option value="rating">Top rated</option>
+            <option value="worst">Worst rated</option>
+            <option value="reviews">Most reviewed</option>
+            <option value="newest">Newest</option>
+          </select>
+        </div>
+        <div class="row">
+          <input id="placeSearch" type="search" placeholder="Jump to a city or place…">
+          <button id="locateBtn" title="Near me">📍</button>
+        </div>
+      </div>
+      <ul id="list" class="list"></ul>
+    </aside>
+    <section id="map" class="map"></section>
+  </main>
+
+  <!-- Bathroom detail -->
+  <dialog id="detail" class="modal">
+    <button class="close" data-close>×</button>
+    <div id="detailBody"></div>
+    <hr>
+    <h3>Leave a rating</h3>
+    <form id="reviewForm" class="form"></form>
+  </dialog>
+
+  <!-- Add bathroom -->
+  <dialog id="addDialog" class="modal">
+    <button class="close" data-close>×</button>
+    <h2>Add a bathroom</h2>
+    <p class="hint">Tip: click anywhere on the map to drop a pin, or search for the place below.</p>
+    <form id="addForm" class="form">
+      <div class="row">
+        <input name="lookup" id="lookup" placeholder="Search for the store/restaurant (optional)">
+        <button type="button" id="lookupBtn">Find</button>
+      </div>
+      <ul id="lookupResults" class="lookup-results"></ul>
+      <label>Place name* <input name="name" required maxlength="100" placeholder="e.g. Joe's Pizza"></label>
+      <label>Type
+        <select name="type" id="addType"></select>
+      </label>
+      <label>Address <input name="address" maxlength="200"></label>
+      <div class="row">
+        <label>City <input name="city" maxlength="80"></label>
+        <label>Country <input name="country" maxlength="80"></label>
+      </div>
+      <div class="row">
+        <label>Latitude* <input name="lat" type="number" step="any" required min="-90" max="90"></label>
+        <label>Longitude* <input name="lng" type="number" step="any" required min="-180" max="180"></label>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" name="free" checked> Free to use</label>
+        <label><input type="checkbox" name="accessible"> Wheelchair accessible</label>
+        <label><input type="checkbox" name="babyChanging"> Baby changing</label>
+      </div>
+      <h3>Your rating</h3>
+      <div id="addRating"></div>
+      <p id="addError" class="error"></p>
+      <button class="primary" type="submit">Add bathroom</button>
+    </form>
+  </dialog>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
