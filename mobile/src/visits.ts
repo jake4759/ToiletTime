@@ -1,5 +1,5 @@
 import * as Location from 'expo-location';
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api } from './api';
 import { distanceMeters } from './geo';
@@ -29,17 +29,38 @@ export async function currentHere(): Promise<Here | null> {
   }
 }
 
+/** Restrooms (by id) and map places (by OpenStreetMap id) you were near recently. */
+export interface RecentVisits {
+  restroomIds: Set<string>;
+  osmIds: Set<string>;
+}
+
+const NO_VISITS: RecentVisits = { restroomIds: new Set(), osmIds: new Set() };
+
 /**
  * While the app is open and you're signed in, lets the server know which restrooms you're near,
- * so you can rate them any time in the next 24 hours.
+ * so you can rate them any time in the next 24 hours. Returns the ones you can still rate.
  */
 export function useVisitPings(
   signedIn: boolean,
   fix: Here | null,
   restrooms: Restroom[],
   places: Place[],
-) {
+): RecentVisits {
   const last = useRef<{ at: number; key: string } | null>(null);
+  const [recent, setRecent] = useState<RecentVisits>(NO_VISITS);
+
+  const refresh = useCallback(() => {
+    api.recentVisits().then(
+      (r) => setRecent({ restroomIds: new Set(r.restroomIds), osmIds: new Set(r.osmIds) }),
+      () => {},
+    );
+  }, []);
+
+  useEffect(() => {
+    if (signedIn) refresh();
+    else last.current = null;
+  }, [signedIn, refresh]);
 
   useEffect(() => {
     if (!signedIn || !fix) return;
@@ -58,6 +79,28 @@ export function useVisitPings(
     const since = last.current ? now - last.current.at : Infinity;
     if (since < 10_000 || (last.current?.key === key && since < PING_EVERY_MS)) return;
     last.current = { at: now, key };
-    api.visits(fix, restroomIds.slice(0, 50), nearbyPlaces).catch(() => {});
-  }, [signedIn, fix, restrooms, places]);
+    api
+      .visits(fix, restroomIds.slice(0, 50), nearbyPlaces)
+      .then((r) => r.recorded > 0 && refresh())
+      .catch(() => {});
+  }, [signedIn, fix, restrooms, places, refresh]);
+
+  return signedIn ? recent : NO_VISITS;
+}
+
+/** Whether you can rate something: you're close enough now, or you were near it recently. */
+export function canReview(
+  target: { lat: number; lng: number; id?: string; osmId?: string | null },
+  fix: Here | null,
+  radiusM: number,
+  recent: RecentVisits,
+): boolean {
+  if (target.id && recent.restroomIds.has(target.id)) return true;
+  if (target.osmId && recent.osmIds.has(target.osmId)) return true;
+  if (!fix) return false;
+  const slack = Math.min(fix.accuracy, 100);
+  return (
+    distanceMeters({ latitude: fix.lat, longitude: fix.lng }, { latitude: target.lat, longitude: target.lng }) <=
+    radiusM + slack
+  );
 }

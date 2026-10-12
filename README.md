@@ -6,7 +6,7 @@ ToiletTime has a native app for iPhone and Android (`mobile/`, built with Expo a
 
 ## Features
 
-- **World map.** Every rated restroom appears as a pin colored by its average rating. Your own spot is your **Flush Buddy**, a little full-body character you dress up.
+- **World map.** Every rated restroom appears as a pin colored by its average rating. Your own spot is your **Flush Buddy**, a little full-body character you dress up, in a round badge in your favorite color. A circle around you shows the 200 m area where you can review, and places you can review right now get a green ✓.
 - **Places already on the map.** Zoom in and nearby restaurants, cafés, stores, gas stations, hotels, and restrooms already mapped in OpenStreetMap (including those inside theme parks, malls and stations) appear with icons. Tap one to rate its restroom; there's nothing to set up first.
 - **Add a restroom.** Search for a business to fill in its details, or touch and hold the map to place one yourself.
 - **Flush Buddy and the Closet.** Pick skin, hair, hats, glasses, tops, bottoms, shoes and something to hold. Every restroom you review moves you up a level (Newbie, First Flush, Regular, Throne Scout, Porcelain Pro, Royal Flush) and unlocks new items, from a baseball cap after your first review to the Golden Plunger at 25. The app celebrates each unlock.
@@ -167,12 +167,13 @@ Requests that need an account send the Supabase access token as `Authorization: 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/config` | Supabase URL and publishable key for the apps (or `null` when accounts are off), and the contact email |
+| `GET` | `/api/config` | Supabase URL and publishable key for the apps (or `null` when accounts are off), the contact email, and the review `rules` (radius and time window) |
 | `GET` | `/api/places?south=&west=&north=&east=` | Unrated businesses and mapped restrooms in an area (at most about 7 km across) |
 | `GET` | `/api/bathrooms?q=&type=&sort=` | Rated restrooms with average scores |
 | `GET` | `/api/bathrooms/:id` | A restroom and its reviews |
 | `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `osmId`, optional `review`, `here`). Needs a verified account with a username. Returns `rewards`. |
 | `POST` | `/api/bathrooms/:id/reviews` | Add or update your review (`overall`, `cleanliness`, `supplies`, `privacy` from 1 to 5, optional `comment`, `here`). Returns `rewards`. |
+| `GET` | `/api/visits` | Restrooms (`restroomIds`) and map places (`osmIds`) you were near in the last 24 hours |
 | `POST` | `/api/visits` | Note which nearby restrooms you're at (`lat`, `lng`, `accuracy`, `restroomIds`, `places: [{osmId, lat, lng}]`) |
 | `GET` | `/api/character` | The Closet: every item, what unlocks it, colors and levels |
 | `DELETE` | `/api/reviews/:id` | Delete one of your reviews |

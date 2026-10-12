@@ -23,6 +23,8 @@ interface AuthState {
   providers: { apple: boolean; google: boolean };
   /** Where people can write for support, reports and privacy requests (from the server's settings). */
   contactEmail: string | null;
+  /** How close (meters) you must be to a restroom to rate it. */
+  visitRadiusM: number;
   user: User | null;
   /** The next step before this person can post, or null if they can. */
   missing: Missing;
@@ -79,6 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [client, setClient] = useState<SupabaseClient | null>(null);
   const [providers, setProviders] = useState({ apple: false, google: false });
   const [contactEmail, setContactEmail] = useState<string | null>(null);
+  const [visitRadiusM, setVisitRadiusM] = useState(200);
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const clientRef = useRef<SupabaseClient | null>(null);
@@ -100,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           const settings = await api.config();
           setContactEmail(settings.contactEmail);
+          if (settings.rules?.visitRadiusM) setVisitRadiusM(settings.rules.visitRadiusM);
           config = settings.auth;
           break;
         } catch {
@@ -169,6 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       enabled: !!client,
       providers,
       contactEmail,
+      visitRadiusM,
       user: session ? user : null,
       missing,
 
@@ -241,7 +246,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
       },
     };
-  }, [ready, client, providers, contactEmail, session, user, refreshUser]);
+  }, [ready, client, providers, contactEmail, visitRadiusM, session, user, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

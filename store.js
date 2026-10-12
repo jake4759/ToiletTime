@@ -250,6 +250,10 @@ class JsonStore {
     this.save();
   }
 
+  async listVisits(userId, since) {
+    return [...new Set(this.visits.filter((v) => v.userId === userId && v.at > since).map((v) => v.key))];
+  }
+
   async hasVisit(userId, keys, since) {
     return this.visits.some((v) => v.userId === userId && keys.includes(v.key) && v.at > since);
   }
@@ -614,6 +618,15 @@ class PgStore {
         [userId, key],
       );
     }
+  }
+
+  async listVisits(userId, since) {
+    if (!isUuid(userId)) return [];
+    const { rows } = await this.pool.query('SELECT target_key FROM visits WHERE user_id = $1 AND visited_at > $2', [
+      userId,
+      since,
+    ]);
+    return rows.map((r) => r.target_key);
   }
 
   async hasVisit(userId, keys, since) {

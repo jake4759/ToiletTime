@@ -81,6 +81,7 @@ export const api = {
   /** Tells the server which restrooms you're near, so you can rate them later today. */
   visits: (here: Here, restroomIds: string[], places: { osmId: string; lat: number; lng: number }[]) =>
     request<{ recorded: number }>('/api/visits', { body: { ...here, restroomIds, places } }),
+  recentVisits: () => request<{ restroomIds: string[]; osmIds: string[] }>('/api/visits'),
   characterCatalog: () => request<CharacterCatalog>('/api/character'),
 
   places: (b: { south: number; west: number; north: number; east: number }) =>
@@ -89,7 +90,11 @@ export const api = {
     ),
 
   config: () =>
-    request<{ auth: { supabaseUrl: string; supabaseKey: string } | null; contactEmail: string | null }>('/api/config'),
+    request<{
+      auth: { supabaseUrl: string; supabaseKey: string } | null;
+      contactEmail: string | null;
+      rules?: { visitRadiusM: number; reviewWindowHours: number };
+    }>('/api/config'),
   reportReview: (id: string, reason: string) =>
     request<{ ok: true; hidden: boolean }>(`/api/reviews/${encodeURIComponent(id)}/report`, { body: { reason } }),
   me: () => request<{ user: User }>('/api/me').then((d) => d.user),

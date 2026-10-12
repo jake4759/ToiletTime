@@ -36,6 +36,7 @@ let sb = null; // Supabase client, once the server says sign-in is set up
 let token = null; // current Supabase access token
 let currentUser = null; // { id, username, avatarUrl, email, emailVerified, ... } from /api/me
 let contactEmail = null;
+let visitRadiusM = 200;
 
 // People whose reviews this browser hides (kept only in this browser).
 const BLOCKED_KEY = 'toilettime.blocked';
@@ -294,10 +295,22 @@ $('#placeSearch').addEventListener('keydown', async (e) => {
   }
 });
 
+let reviewCircle = null;
 $('#locateBtn').addEventListener('click', () => {
   if (!navigator.geolocation) return toast('Location is not supported by this browser.');
   navigator.geolocation.getCurrentPosition(
-    (pos) => map.setView([pos.coords.latitude, pos.coords.longitude], 14),
+    (pos) => {
+      const here = [pos.coords.latitude, pos.coords.longitude];
+      map.setView(here, 16);
+      // You can review places inside this circle (or ones you've been near in the last 24 hours).
+      reviewCircle?.remove();
+      reviewCircle = L.layerGroup([
+        L.circle(here, { radius: visitRadiusM, color: '#0f3d3e', weight: 2, opacity: 0.6, fillOpacity: 0.1 }),
+        L.circleMarker(here, { radius: 7, color: '#fff', weight: 3, fillColor: '#0f3d3e', fillOpacity: 1 }),
+      ])
+        .bindTooltip(`You can review places inside this ${visitRadiusM} m circle`)
+        .addTo(map);
+    },
     () => toast('Unable to determine your location.'),
   );
 });
@@ -1138,6 +1151,7 @@ async function startAuth() {
     const settings = await api('/api/config');
     config = settings.auth;
     contactEmail = settings.contactEmail;
+    if (settings.rules?.visitRadiusM) visitRadiusM = settings.rules.visitRadiusM;
   } catch {
     // Browsing still works without accounts.
   }

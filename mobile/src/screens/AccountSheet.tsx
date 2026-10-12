@@ -22,7 +22,7 @@ import { api } from '../api';
 import { useAuth } from '../auth';
 import { Avatar, Button, Field, Icon, PasswordField, Section, Separator, SheetHeader, Stars } from '../components/ui';
 import { ClosetSheet, LevelProgress } from '../character/ClosetSheet';
-import { Character } from '../character/Character';
+import { CharacterBadge } from '../character/Character';
 import { useTheme } from '../theme';
 import { contactSupport, openLegal, useBlocked } from '../safety';
 import type { MyReview } from '../types';
@@ -868,9 +868,7 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
             accessibilityLabel="Open your closet"
             style={({ pressed }) => [styles.buddy, { opacity: pressed ? 0.7 : 1 }]}
           >
-            <View style={[styles.buddyStage, { backgroundColor: theme.brandSoft }]}>
-              <Character character={user.character} height={96} />
-            </View>
+            <CharacterBadge character={user.character} size={92} />
             <View style={styles.flex}>
               <LevelProgress user={user} />
             </View>
@@ -1111,7 +1109,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   buddy: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14 },
-  buddyStage: { borderRadius: 14, paddingHorizontal: 10, paddingTop: 6 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, minHeight: 46 },
   rowText: { fontSize: 17 },
   reviewRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 },

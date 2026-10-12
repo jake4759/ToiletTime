@@ -4,6 +4,8 @@
 const COLORS = {
   hair: ['#2b1d16', '#5a3825', '#a0632f', '#e0b45a', '#d2483b', '#9aa0a6', '#f4f1ea', '#3f6fd8', '#e05aa8', '#3fb37f'],
   clothes: ['#0f3d3e', '#2563eb', '#7c3aed', '#db2777', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#334155', '#f8fafc'],
+  /** The circle behind your character on the map. */
+  background: ['#cfe8df', '#dbeafe', '#e9d5ff', '#fbcfe8', '#fecaca', '#fed7aa', '#fef08a', '#bbf7d0', '#e2e8f0', '#ffffff'],
 };
 
 /** slot -> list of items. `unlock` is how many restrooms you must have reviewed. */
@@ -118,6 +120,7 @@ const DEFAULT_CHARACTER = {
   bottomColor: COLORS.clothes[1],
   shoes: 'sneakers',
   held: 'none',
+  bgColor: COLORS.background[0],
 };
 
 const item = (slot, id) => SLOTS[slot]?.items.find((i) => i.id === id);
@@ -158,6 +161,7 @@ function sanitize(character, count) {
   if (COLORS.hair.includes(c.hairColor)) out.hairColor = c.hairColor;
   if (COLORS.clothes.includes(c.topColor)) out.topColor = c.topColor;
   if (COLORS.clothes.includes(c.bottomColor)) out.bottomColor = c.bottomColor;
+  if (COLORS.background.includes(c.bgColor)) out.bgColor = c.bgColor;
   return out;
 }
 
@@ -172,7 +176,7 @@ function validate(character, count) {
       throw new Error(`${it.name} unlocks after reviewing ${it.unlock} restroom${it.unlock === 1 ? '' : 's'}.`);
     }
   }
-  for (const [key, palette] of [['hairColor', COLORS.hair], ['topColor', COLORS.clothes], ['bottomColor', COLORS.clothes]]) {
+  for (const [key, palette] of [['hairColor', COLORS.hair], ['topColor', COLORS.clothes], ['bottomColor', COLORS.clothes], ['bgColor', COLORS.background]]) {
     if (character[key] !== undefined && !palette.includes(character[key])) throw new Error('invalid color');
   }
   return sanitize(character, count);

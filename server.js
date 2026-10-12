@@ -440,13 +440,27 @@ async function handleApi(req, res, url) {
 
   // GET /api/config  (public settings the apps need to sign in with Supabase)
   if (parts[1] === 'config' && req.method === 'GET') {
-    return send(res, 200, { auth: supabase.publicConfig(), contactEmail: process.env.CONTACT_EMAIL || null });
+    return send(res, 200, {
+      auth: supabase.publicConfig(),
+      contactEmail: process.env.CONTACT_EMAIL || null,
+      rules: { visitRadiusM: VISIT_RADIUS_M, reviewWindowHours: REVIEW_WINDOW_HOURS },
+    });
   }
 
   if (parts[1] === 'me') return handleMe(req, res, store, parts);
 
   // GET /api/character  (the closet: items, what unlocks them, colors, levels)
   if (parts[1] === 'character' && req.method === 'GET') return send(res, 200, character.catalog());
+
+  // GET /api/visits  (restrooms and places you were near recently, so you can still rate them)
+  if (parts[1] === 'visits' && req.method === 'GET') {
+    const user = await requireUser(req);
+    const keys = await store.listVisits(user.id, hoursAgo(REVIEW_WINDOW_HOURS));
+    return send(res, 200, {
+      restroomIds: keys.filter((k) => k.startsWith('r:')).map((k) => k.slice(2)),
+      osmIds: keys.filter((k) => k.startsWith('osm:')).map((k) => k.slice(4)),
+    });
+  }
 
   // POST /api/visits  { lat, lng, accuracy, restroomIds: [], places: [{ osmId, lat, lng }] }
   // The app reports which restrooms you're near while it's open, so you can rate them later that day.

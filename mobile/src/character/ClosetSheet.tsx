@@ -18,14 +18,23 @@ import { useAuth } from '../auth';
 import { Chip, Icon, SheetHeader } from '../components/ui';
 import { plural, useTheme } from '../theme';
 import type { CharacterCatalog, ClosetItem, User } from '../types';
-import { Character } from './Character';
+import { Character, CharacterBadge } from './Character';
 import { DEFAULT_CHARACTER, type CharacterConfig } from './draw';
 
 const COLOR_KEY: Record<string, keyof CharacterConfig> = {
   hair: 'hairColor',
   top: 'topColor',
   bottom: 'bottomColor',
+  background: 'bgColor',
 };
+
+const isLight = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16);
+  return ((n >> 16) & 255) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114 > 180;
+};
+
+/** Not an item slot: the color of the circle behind you on the map. */
+const BACKGROUND_TAB = 'background';
 
 const itemList = (names: string[]) =>
   names.length > 2 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} more` : names.join(' and ');
@@ -124,7 +133,12 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
   };
 
   const current = catalog?.slots[slot];
-  const palette = catalog && current?.color ? catalog.colors[current.color] : null;
+  const palette =
+    slot === BACKGROUND_TAB
+      ? (catalog?.colors.background ?? null)
+      : catalog && current?.color
+        ? catalog.colors[current.color]
+        : null;
   const colorKey = COLOR_KEY[slot];
   const columns = width > 500 ? 5 : 3;
   const tile = (Math.min(width, 700) - 32 - (columns - 1) * 10) / columns;
@@ -137,8 +151,8 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
         right={{ label: 'Save', onPress: save, bold: true, disabled: !changed, loading: saving }}
       />
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
-        <View style={[styles.stage, { backgroundColor: theme.brandSoft }]}>
-          <Character character={draft} height={210} />
+        <View style={styles.stage}>
+          <CharacterBadge character={draft} size={220} border={5} />
         </View>
         <View style={[styles.card, { backgroundColor: theme.surface }]}>
           <LevelProgress user={user} />
@@ -154,6 +168,13 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
               {Object.entries(catalog.slots).map(([key, s]) => (
                 <Chip key={key} label={s.label} selected={key === slot} onPress={() => setSlot(key)} />
               ))}
+              {catalog.colors.background && (
+                <Chip
+                  label="Background"
+                  selected={slot === BACKGROUND_TAB}
+                  onPress={() => setSlot(BACKGROUND_TAB)}
+                />
+              )}
             </ScrollView>
 
             {palette && colorKey && (
@@ -175,13 +196,18 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
                         { backgroundColor: c, borderColor: selected ? theme.text : theme.separator },
                       ]}
                     >
-                      {selected && <Icon name="checkmark" size={14} color={c === '#f8fafc' || c === '#f4f1ea' ? '#111' : '#fff'} />}
+                      {selected && <Icon name="checkmark" size={14} color={isLight(c) ? '#111' : '#fff'} />}
                     </Pressable>
                   );
                 })}
               </ScrollView>
             )}
 
+            {slot === BACKGROUND_TAB && (
+              <Text style={[styles.footer, { color: theme.muted, paddingTop: 4 }]}>
+                The circle behind you on the map.
+              </Text>
+            )}
             <View style={styles.grid}>
               {current?.items.map((item) => {
                 const locked = item.unlock > user.reviewCount;
@@ -242,7 +268,7 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  stage: { alignItems: 'center', paddingTop: 20, paddingBottom: 8, marginBottom: 12 },
+  stage: { alignItems: 'center', paddingTop: 20, paddingBottom: 16 },
   card: { marginHorizontal: 16, borderRadius: 12, padding: 14 },
   levelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
   levelBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },

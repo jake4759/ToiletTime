@@ -175,7 +175,7 @@ export interface ClosetSlot {
 
 export interface CharacterCatalog {
   slots: Record<string, ClosetSlot>;
-  colors: { hair: string[]; clothes: string[] };
+  colors: { hair: string[]; clothes: string[]; background?: string[] };
   levels: { min: number; name: string }[];
   defaults: CharacterConfig;
 }

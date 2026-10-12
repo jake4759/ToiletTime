@@ -16,6 +16,8 @@ export interface CharacterConfig {
   bottomColor: string;
   shoes: string;
   held: string;
+  /** The circle behind the character on the map. */
+  bgColor: string;
 }
 
 export const DEFAULT_CHARACTER: CharacterConfig = {
@@ -30,6 +32,7 @@ export const DEFAULT_CHARACTER: CharacterConfig = {
   bottomColor: '#2563eb',
   shoes: 'sneakers',
   held: 'none',
+  bgColor: '#cfe8df',
 };
 
 export const VIEWBOX = '0 -12 120 182';

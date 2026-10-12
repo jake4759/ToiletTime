@@ -3,7 +3,7 @@ import * as Location from 'expo-location';
 import { StatusBar } from 'expo-status-bar';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, type Region } from 'react-native-maps';
+import MapView, { Circle, Marker, type Region } from 'react-native-maps';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { API_URL, IS_HOSTED_API, api } from './src/api';
@@ -11,7 +11,7 @@ import { AuthProvider, useAuth } from './src/auth';
 import { BlockedProvider } from './src/safety';
 import { Avatar, Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
 import { distanceMeters, formatDistance } from './src/geo';
-import { Character } from './src/character/Character';
+import { CharacterBadge } from './src/character/Character';
 import { useRewards } from './src/character/rewards';
 import { AccountSheet } from './src/screens/AccountSheet';
 import { AddSheet, type AddRequest } from './src/screens/AddSheet';
@@ -19,7 +19,7 @@ import { DetailSheet } from './src/screens/DetailSheet';
 import { ListSheet } from './src/screens/ListSheet';
 import { formatRating, plural, ratingColor, useTheme } from './src/theme';
 import { PLACE_TYPES, type Here, type LatLng, type Place, type PlaceType, type Restroom } from './src/types';
-import { useVisitPings } from './src/visits';
+import { canReview, useVisitPings } from './src/visits';
 
 const WORLD: Region = { latitude: 30, longitude: 0, latitudeDelta: 120, longitudeDelta: 180 };
 /** Nearby places load once the map is zoomed in at least this far (degrees of latitude on screen). */
@@ -65,7 +65,7 @@ function MapScreen() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [addRequest, setAddRequest] = useState<AddRequest | null>(null);
   const pendingDetail = useRef<string | null>(null);
-  const { user, missing } = useAuth();
+  const { user, missing, visitRadiusM } = useAuth();
   const pendingRestroom = useRef<string | null>(null);
   const [account, setAccount] = useState<{ open: boolean; reason: string | null }>({ open: false, reason: null });
   const addAfterSignIn = useRef<AddRequest | null>(null);
@@ -115,7 +115,14 @@ function MapScreen() {
   }, [load]);
 
   // Remember which restrooms you pass by, so you can rate them later today.
-  useVisitPings(!!user && !missing, fix, restrooms, places);
+  const recentVisits = useVisitPings(!!user && !missing, fix, restrooms, places);
+  // What you can rate right now: inside your circle, or somewhere you were in the last 24 hours.
+  const reviewable = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of restrooms) if (canReview(r, fix, visitRadiusM, recentVisits)) ids.add(r.id);
+    for (const p of places) if (canReview(p, fix, visitRadiusM, recentVisits)) ids.add(p.osmId);
+    return ids;
+  }, [restrooms, places, fix, visitRadiusM, recentVisits]);
   const { celebrate, closet } = useRewards();
 
   const closeAccount = useCallback(() => setAccount((a) => ({ ...a, open: false })), []);
@@ -235,12 +242,23 @@ function MapScreen() {
         onLongPress={(e) => startAdd(e.nativeEvent.coordinate)}
         onRegionChangeComplete={(region) => loadPlaces(region)}
       >
+        {userLocation && (
+          <Circle
+            center={userLocation}
+            radius={visitRadiusM}
+            strokeWidth={2}
+            strokeColor={theme.dark ? 'rgba(127,209,176,0.85)' : 'rgba(15,61,62,0.6)'}
+            fillColor={theme.dark ? 'rgba(127,209,176,0.14)' : 'rgba(15,61,62,0.10)'}
+            zIndex={0}
+          />
+        )}
         {userLocation && <CharacterMarker coordinate={userLocation} />}
         {unratedPlaces.map((p) => (
           <PlacePin
             key={p.osmId}
             place={p}
             selected={p.osmId === selectedPlaceId}
+            reviewable={reviewable.has(p.osmId)}
             onPress={() => {
               Haptics.selectionAsync();
               setSelectedPlaceId(p.osmId);
@@ -253,6 +271,7 @@ function MapScreen() {
             key={r.id}
             restroom={r}
             selected={r.id === selectedId}
+            reviewable={reviewable.has(r.id)}
             onPress={() => {
               Haptics.selectionAsync();
               selectRestroom(r.id);
@@ -309,9 +328,23 @@ function MapScreen() {
 
       {/* Bottom: selected preview + actions */}
       <View style={[styles.bottom, { paddingBottom: insets.bottom + 12 }]} pointerEvents="box-none">
-        {selected && <PreviewCard restroom={selected} origin={userLocation} onPress={() => setDetailId(selected.id)} />}
+        {selected && (
+          <PreviewCard
+            restroom={selected}
+            origin={userLocation}
+            reviewable={reviewable.has(selected.id)}
+            radius={visitRadiusM}
+            onPress={() => setDetailId(selected.id)}
+          />
+        )}
         {selectedPlace && (
-          <PlaceCard place={selectedPlace} origin={userLocation} onRate={() => ratePlace(selectedPlace)} />
+          <PlaceCard
+            place={selectedPlace}
+            origin={userLocation}
+            reviewable={reviewable.has(selectedPlace.osmId)}
+            radius={visitRadiusM}
+            onRate={() => ratePlace(selectedPlace)}
+          />
         )}
         <View style={styles.actionRow}>
           <RoundButton icon="list.bullet" label="List" onPress={() => setList({ open: true, focusSearch: false })} />
@@ -332,7 +365,11 @@ function MapScreen() {
                   ? "Couldn't load nearby places. Tap to retry."
                   : placesStatus === 'loading'
                     ? 'Finding nearby places…'
-                    : 'Tap a place to rate its restroom, or touch and hold to add one'}
+                    : reviewable.size > 0
+                      ? `✓ ${plural(reviewable.size, 'place')} you can review right now`
+                      : userLocation
+                        ? `You can review places inside your ${formatDistance(visitRadiusM)} circle`
+                        : 'Tap a place to rate its restroom, or touch and hold to add one'}
             </Text>
           </Pressable>
         )}
@@ -405,34 +442,48 @@ function MapScreen() {
   );
 }
 
+/** A small green check on pins you can review right now. */
+function ReviewableCheck() {
+  return (
+    <View style={styles.check}>
+      <Icon name="checkmark" size={9} color="#fff" />
+    </View>
+  );
+}
+
 const RestroomPin = memo(function RestroomPin({
   restroom,
   selected,
+  reviewable,
   onPress,
 }: {
   restroom: Restroom;
   selected: boolean;
+  reviewable: boolean;
   onPress: () => void;
 }) {
   return (
     <Marker
       // Remount when selection or rating changes so the snapshot of the custom view refreshes.
-      key={`${restroom.id}-${selected}-${restroom.rating}`}
+      key={`${restroom.id}-${selected}-${restroom.rating}-${reviewable}`}
       coordinate={{ latitude: restroom.lat, longitude: restroom.lng }}
       onPress={onPress}
       tracksViewChanges={false}
       anchor={{ x: 0.5, y: 0.5 }}
       zIndex={selected ? 10 : 1}
-      accessibilityLabel={`${restroom.name}, rated ${formatRating(restroom.rating)}`}
+      accessibilityLabel={`${restroom.name}, rated ${formatRating(restroom.rating)}${reviewable ? ', you can review it' : ''}`}
     >
-      <View style={[styles.pin, selected && styles.pinSelected, { backgroundColor: ratingColor(restroom.rating) }]}>
-        <Text style={[styles.pinText, selected && styles.pinTextSelected]}>{formatRating(restroom.rating)}</Text>
+      <View style={styles.pinWrap}>
+        <View style={[styles.pin, selected && styles.pinSelected, { backgroundColor: ratingColor(restroom.rating) }]}>
+          <Text style={[styles.pinText, selected && styles.pinTextSelected]}>{formatRating(restroom.rating)}</Text>
+        </View>
+        {reviewable && <ReviewableCheck />}
       </View>
     </Marker>
   );
 });
 
-/** You on the map: your Flush Buddy, dressed in whatever you picked in the Closet. */
+/** You on the map: your Flush Buddy in a round badge, dressed in whatever you picked in the Closet. */
 function CharacterMarker({ coordinate }: { coordinate: LatLng }) {
   const { user } = useAuth();
   const look = user?.character;
@@ -441,15 +492,14 @@ function CharacterMarker({ coordinate }: { coordinate: LatLng }) {
       // Remount when the outfit changes so the marker's snapshot refreshes.
       key={`me-${look ? Object.values(look).join('-') : 'default'}`}
       coordinate={coordinate}
-      // Stand on the spot: the feet are at the bottom of the drawing.
-      anchor={{ x: 0.5, y: 0.93 }}
+      anchor={{ x: 0.5, y: 0.5 }}
       zIndex={20}
       // Just one marker, so it can afford to track changes (the drawing renders after the first frame).
       tracksViewChanges
       accessibilityLabel="You are here"
     >
       <View style={styles.character}>
-        <Character character={look} height={64} />
+        <CharacterBadge character={look} size={66} />
       </View>
     </Marker>
   );
@@ -458,38 +508,65 @@ function CharacterMarker({ coordinate }: { coordinate: LatLng }) {
 const PlacePin = memo(function PlacePin({
   place,
   selected,
+  reviewable,
   onPress,
 }: {
   place: Place;
   selected: boolean;
+  reviewable: boolean;
   onPress: () => void;
 }) {
   const theme = useTheme();
   const restroom = place.isRestroom;
   return (
     <Marker
-      key={`${place.osmId}-${selected}-${theme.dark}`}
+      key={`${place.osmId}-${selected}-${theme.dark}-${reviewable}`}
       coordinate={{ latitude: place.lat, longitude: place.lng }}
       onPress={onPress}
       tracksViewChanges={false}
       anchor={{ x: 0.5, y: 0.5 }}
       zIndex={selected ? 9 : 0}
-      accessibilityLabel={`${place.name}, not rated yet`}
+      accessibilityLabel={`${place.name}, not rated yet${reviewable ? ', you can review it' : ''}`}
     >
-      <View
-        style={[
-          styles.placePin,
-          selected && styles.placePinSelected,
-          { backgroundColor: restroom ? theme.brand : theme.surface, borderColor: restroom ? '#fff' : theme.brand },
-        ]}
-      >
-        <Icon name={TYPE_ICONS[place.type]} size={selected ? 17 : 13} color={restroom ? theme.onBrand : theme.brand} />
+      <View style={styles.pinWrap}>
+        <View
+          style={[
+            styles.placePin,
+            selected && styles.placePinSelected,
+            { backgroundColor: restroom ? theme.brand : theme.surface, borderColor: restroom ? '#fff' : theme.brand },
+          ]}
+        >
+          <Icon name={TYPE_ICONS[place.type]} size={selected ? 17 : 13} color={restroom ? theme.onBrand : theme.brand} />
+        </View>
+        {reviewable && <ReviewableCheck />}
       </View>
     </Marker>
   );
 });
 
-function PlaceCard({ place, origin, onRate }: { place: Place; origin: LatLng | null; onRate: () => void }) {
+/** Under a card: whether you can review this place now. */
+function ReviewStatus({ reviewable, radius }: { reviewable: boolean; radius: number }) {
+  const theme = useTheme();
+  return (
+    <Text style={[styles.previewSub, { color: reviewable ? '#1d7a5c' : theme.muted, fontWeight: reviewable ? '600' : '400' }]} numberOfLines={1}>
+      {reviewable ? '✓ You can review this' : `Get within ${formatDistance(radius)} to review`}
+    </Text>
+  );
+}
+
+function PlaceCard({
+  place,
+  origin,
+  reviewable,
+  radius,
+  onRate,
+}: {
+  place: Place;
+  origin: LatLng | null;
+  reviewable: boolean;
+  radius: number;
+  onRate: () => void;
+}) {
   const theme = useTheme();
   const distance = origin
     ? formatDistance(distanceMeters(origin, { latitude: place.lat, longitude: place.lng }))
@@ -516,6 +593,7 @@ function PlaceCard({ place, origin, onRate }: { place: Place; origin: LatLng | n
         <Text style={[styles.previewSub, { color: theme.textSecondary }]} numberOfLines={1}>
           {facts ? `Not rated yet · ${facts}` : 'Not rated yet'}
         </Text>
+        <ReviewStatus reviewable={reviewable} radius={radius} />
         <Text style={[styles.credit, { color: theme.muted }]}>Place data © OpenStreetMap contributors</Text>
       </View>
       <Button title="Rate" icon="star.fill" onPress={onRate} style={styles.rateButton} />
@@ -526,10 +604,14 @@ function PlaceCard({ place, origin, onRate }: { place: Place; origin: LatLng | n
 function PreviewCard({
   restroom,
   origin,
+  reviewable,
+  radius,
   onPress,
 }: {
   restroom: Restroom;
   origin: LatLng | null;
+  reviewable: boolean;
+  radius: number;
   onPress: () => void;
 }) {
   const theme = useTheme();
@@ -556,6 +638,7 @@ function PreviewCard({
           <Stars value={restroom.rating} />
           <Text style={[styles.previewSub, { color: theme.muted }]}>{plural(restroom.reviewCount, 'review')}</Text>
         </View>
+        <ReviewStatus reviewable={reviewable} radius={radius} />
       </View>
       <ScorePill rating={restroom.rating} large />
       <Icon name="chevron.right" size={14} color={theme.muted} />
@@ -600,6 +683,20 @@ const styles = StyleSheet.create({
   searchText: { flex: 1, fontSize: 17 },
   count: { fontSize: 15, fontVariant: ['tabular-nums'] },
   divider: { width: StyleSheet.hairlineWidth, height: 24 },
+  pinWrap: { padding: 6 },
+  check: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#1d7a5c',
+    borderWidth: 1.5,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   character: {
     alignItems: 'center',
     shadowColor: '#000',

@@ -1,7 +1,8 @@
 import { memo, type ReactNode } from 'react';
+import { StyleSheet, View } from 'react-native';
 import Svg, { Circle, Defs, Ellipse, G, Line, LinearGradient, Path, Polygon, Rect, Stop } from 'react-native-svg';
 
-import { drawCharacter, VIEWBOX, type CharacterConfig, type Shape } from './draw';
+import { DEFAULT_CHARACTER, drawCharacter, VIEWBOX, type CharacterConfig, type Shape } from './draw';
 
 const COMPONENTS: Record<Shape['t'], any> = {
   circle: Circle,
@@ -38,4 +39,36 @@ export const Character = memo(function Character({
       {drawCharacter(character).map(render)}
     </Svg>
   );
+});
+
+/** The character standing in a round badge in their background color, as on the map. */
+export const CharacterBadge = memo(function CharacterBadge({
+  character,
+  size,
+  border = 3,
+}: {
+  character: Partial<CharacterConfig> | null | undefined;
+  size: number;
+  border?: number;
+}) {
+  return (
+    <View
+      style={[
+        styles.badge,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: border,
+          backgroundColor: character?.bgColor ?? DEFAULT_CHARACTER.bgColor,
+        },
+      ]}
+    >
+      <Character character={character} height={size * 0.88} />
+    </View>
+  );
+});
+
+const styles = StyleSheet.create({
+  badge: { borderColor: '#ffffff', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
 });

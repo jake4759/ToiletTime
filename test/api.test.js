@@ -8,6 +8,7 @@ const { startFakeSupabase } = require('./fake-supabase');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'toilettime-'));
 if (!process.env.DATABASE_URL) process.env.DB_FILE = path.join(tmp, 'db.json');
+process.env.PROFILE_LIMIT ??= '200'; // the tests change profiles more often than a person would
 const supabase = startFakeSupabase();
 const { server, storeReady } = require('../server');
 
@@ -271,6 +272,12 @@ test('you can only rate restrooms you are at, or were near in the last 24 hours'
   res = await post('/api/bathrooms', { osmId: placeId, name: 'Kiosk', lat: 59.9104, lng: 10.7501, review: stars, here: far }, bo.token);
   assert.strictEqual(res.status, 201);
 
+  // The app can ask where you can still leave a review.
+  const recent = await (await request('GET', '/api/visits', undefined, bo.token)).json();
+  assert.ok(recent.restroomIds.includes(b.id));
+  assert.ok(recent.osmIds.includes(placeId));
+  assert.strictEqual((await request('GET', '/api/visits')).status, 401);
+
   assert.strictEqual((await post('/api/visits', { lat: 'x', lng: 1 }, bo.token)).status, 400);
   assert.strictEqual((await post('/api/visits', near)).status, 401);
 });
@@ -302,11 +309,18 @@ test('character: starts with defaults, locked items refused, reviews unlock rewa
   assert.match((await res.json()).error, /Baseball Cap unlocks after reviewing 1 restroom/);
   assert.strictEqual((await request('PATCH', '/api/me', { character: { hat: 'sombrero' } }, eve.token)).status, 400);
   assert.strictEqual((await request('PATCH', '/api/me', { character: { topColor: '#123456' } }, eve.token)).status, 400);
+  assert.strictEqual((await request('PATCH', '/api/me', { character: { bgColor: '#123456' } }, eve.token)).status, 400);
+  res = await request('PATCH', '/api/me', { character: { bgColor: '#fef08a' } }, eve.token);
+  const patched = await res.json();
+  assert.strictEqual(res.status, 200, JSON.stringify(patched));
+  assert.strictEqual(patched.user.character.bgColor, '#fef08a');
 
   const b = await addRestroom(eve.token);
   assert.strictEqual(b.rewards.reviewCount, 1);
   assert.strictEqual(b.rewards.level.name, 'First Flush');
   assert.strictEqual(b.rewards.levelUp, true);
+  const config = await (await request('GET', '/api/config')).json();
+  assert.deepStrictEqual(config.rules, { visitRadiusM: 200, reviewWindowHours: 24 });
   assert.ok(b.rewards.newItems.some((i) => i.id === 'cap'));
 
   res = await request('PATCH', '/api/me', { character: { hat: 'cap', skin: 'skin4', topColor: '#dc2626' } }, eve.token);
