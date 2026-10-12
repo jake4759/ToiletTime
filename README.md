@@ -11,6 +11,7 @@ ToiletTime has a native iPhone app (`mobile/`, built with Expo and React Native)
 - **Detailed ratings.** Reviews score overall experience, cleanliness, supplies and privacy, with an optional written review.
 - **Search and filter.** Filter by name, city, country or place type, and sort by rating, review count or date added.
 - **Amenities.** Each listing notes whether it is free to use, wheelchair accessible and has a baby changing station.
+- **Places already on the map.** Zoom in and nearby restaurants, cafés, stores, gas stations, hotels, and restrooms already mapped in OpenStreetMap (including those inside theme parks, malls and stations) appear with icons. Tap one to rate its restroom; there's nothing to set up first.
 - **Accounts.** Anyone can browse; adding restrooms and reviews needs a free account (email and password). Reviews show the account's name, and rating the same place again updates your earlier review. Accounts can be deleted from the app; their reviews stay without the name.
 - Light and dark themes, and a responsive layout for phones.
 
@@ -110,6 +111,9 @@ npm test    # API tests
 | `TRUST_PROXY` | none | Set to `1` behind a proxy such as Render's, so the per-client submission limit uses the real client address. |
 | `WRITE_LIMIT` | `30` | Maximum new restrooms and reviews per client every 10 minutes. |
 | `AUTH_LIMIT` | `20` | Maximum sign-in and sign-up attempts per client every 10 minutes. |
+| `PLACES_LIMIT` | `300` | Maximum nearby-places lookups per client every 10 minutes. |
+| `SESSION_DAYS` | `90` | How long a sign-in lasts. |
+| `OVERPASS_URL` | overpass-api.de | OpenStreetMap Overpass endpoint used for nearby places. |
 
 For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 
@@ -118,8 +122,9 @@ For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
+| `GET` | `/api/places?south=&west=&north=&east=` | Unrated businesses and mapped restrooms in an area (at most about 13 km across) |
 | `GET` | `/api/bathrooms?q=&type=&sort=` | List restrooms with average ratings |
-| `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `review`). Requires sign-in. |
+| `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `review`, optional `osmId` from `/api/places`). Requires sign-in. Rating a place someone already added adds your review to it. |
 | `GET` | `/api/bathrooms/:id` | Restroom details and all reviews |
 | `POST` | `/api/bathrooms/:id/reviews` | Add or update your review (`overall`, `cleanliness`, `supplies`, `privacy` from 1 to 5, optional `comment`). Requires sign-in. |
 | `POST` | `/api/auth/signup` | Create an account (`name`, `email`, `password` of 8+ characters). Returns `{ token, user }`. |
@@ -130,6 +135,17 @@ For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 
 Requests that need sign-in send the token as `Authorization: Bearer <token>`. Passwords are hashed with scrypt, and the server stores only a hash of each session token.
 
+## Security
+
+- **Encrypted in transit.** The hosted server is served over HTTPS (Render provides the certificate); plain-HTTP requests are redirected and browsers are told to use HTTPS only (HSTS). The iPhone app only talks to the hosted server over HTTPS, and the database connection uses TLS (`sslmode=require`).
+- **Passwords** are never stored. The server keeps a salted scrypt hash, and checks passwords in constant time, including for unknown emails, so timing doesn't reveal who has an account.
+- **Sessions** are random 256-bit tokens. The server stores only their SHA-256 hash, so a database leak doesn't expose usable sessions. They expire after 90 days (`SESSION_DAYS`) and end on sign-out or account deletion. On iPhone the token is kept in the Keychain.
+- **Abuse limits** per client on sign-in attempts, sign-ups, new restrooms and reviews, and map lookups.
+- **Injection and XSS.** All database queries are parameterized, input is validated and length-limited, request bodies are capped at 32 KB, and the website escapes everything users write. A strict Content Security Policy blocks injected scripts and framing; other headers stop MIME sniffing and clickjacking.
+- **Account deletion** is built in, as Apple requires, and removes the account and all its sessions.
+
+`npm audit` reports issues only in Expo's developer tools that run on your computer while building, not in the app or the server. Keep them current by updating to the newest Expo release when it comes out.
+
 ## Third-party services
 
-Map tiles are provided by [CARTO](https://carto.com/attributions) using [OpenStreetMap](https://www.openstreetmap.org/copyright) data. Place search uses the OpenStreetMap [Nominatim](https://nominatim.org/) service, which is subject to its usage policy; high-traffic deployments should use a self-hosted or commercial geocoder. Leaflet is bundled under `public/vendor/leaflet` (BSD-2-Clause). The iPhone app uses Apple Maps for its map and Apple's geocoder to fill in addresses.
+Map tiles are provided by [CARTO](https://carto.com/attributions) using [OpenStreetMap](https://www.openstreetmap.org/copyright) data. Nearby places come from OpenStreetMap through the [Overpass API](https://overpass-api.de/), cached on the server for an hour. Place search uses the OpenStreetMap [Nominatim](https://nominatim.org/) service, which is subject to its usage policy; high-traffic deployments should use a self-hosted or commercial geocoder. Leaflet is bundled under `public/vendor/leaflet` (BSD-2-Clause). The iPhone app uses Apple Maps for its map and Apple's geocoder to fill in addresses.

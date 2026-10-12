@@ -25,6 +25,10 @@ function summarize(b) {
 }
 
 const newestFirst = (a, b) => b.createdAt.localeCompare(a.createdAt);
+
+/** Sessions expire after this long; signing in again starts a new one. */
+const SESSION_TTL_MS = (Number(process.env.SESSION_DAYS) || 90) * 24 * 60 * 60 * 1000;
+const sessionCutoff = () => new Date(Date.now() - SESSION_TTL_MS).toISOString();
 const publicReview = ({ userId = null, ...r }) => ({ ...r, userId });
 
 // ---------- JSON file ----------
@@ -61,6 +65,10 @@ class JsonStore {
     return b ? { ...summarize(b), reviews: b.reviews.map(publicReview).sort(newestFirst) } : null;
   }
 
+  async findIdByOsmId(osmId) {
+    return this.bathrooms.find((b) => b.osmId && b.osmId === osmId)?.id ?? null;
+  }
+
   async addRestroom(restroom, firstReview) {
     const b = { ...restroom, reviews: firstReview ? [firstReview] : [] };
     this.bathrooms.push(b);
@@ -91,12 +99,15 @@ class JsonStore {
   }
 
   async createSession(session) {
+    const cutoff = sessionCutoff();
+    this.sessions = this.sessions.filter((s) => s.createdAt > cutoff); // drop expired sessions
     this.sessions.push(session);
     this.save();
   }
 
   async findSessionUser(tokenHash) {
-    const s = this.sessions.find((x) => x.tokenHash === tokenHash);
+    const cutoff = sessionCutoff();
+    const s = this.sessions.find((x) => x.tokenHash === tokenHash && x.createdAt > cutoff);
     return (s && this.users.find((u) => u.id === s.userId)) || null;
   }
 
@@ -161,6 +172,8 @@ const SCHEMA = `
     created_at timestamptz NOT NULL DEFAULT now()
   );
   ALTER TABLE reviews ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE restrooms ADD COLUMN IF NOT EXISTS osm_id text;
+  CREATE UNIQUE INDEX IF NOT EXISTS restrooms_osm_id_idx ON restrooms (osm_id) WHERE osm_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS reviews_restroom_id_idx ON reviews (restroom_id);
   CREATE UNIQUE INDEX IF NOT EXISTS reviews_one_per_user_idx ON reviews (restroom_id, user_id);
 `;
@@ -184,6 +197,7 @@ const toSummary = (row) => ({
   accessible: row.accessible,
   free: row.free,
   babyChanging: row.baby_changing,
+  osmId: row.osm_id ?? null,
   createdAt: row.created_at.toISOString(),
   reviewCount: row.review_count,
   rating: round1(row.rating),
@@ -235,9 +249,9 @@ class PgStore {
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO restrooms (id, name, type, address, city, country, lat, lng, accessible, free, baby_changing, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [r.id, r.name, r.type, r.address, r.city, r.country, r.lat, r.lng, r.accessible, r.free, r.babyChanging, r.createdAt],
+        `INSERT INTO restrooms (id, name, type, address, city, country, lat, lng, accessible, free, baby_changing, created_at, osm_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [r.id, r.name, r.type, r.address, r.city, r.country, r.lat, r.lng, r.accessible, r.free, r.babyChanging, r.createdAt, r.osmId ?? null],
       );
       for (const v of reviews) await this.upsertReview(client, r.id, v);
       await client.query('COMMIT');
@@ -280,6 +294,11 @@ class PgStore {
     return { ...toSummary(rows[0]), reviews: reviews.rows.map(toReview) };
   }
 
+  async findIdByOsmId(osmId) {
+    const { rows } = await this.pool.query('SELECT id FROM restrooms WHERE osm_id = $1', [osmId]);
+    return rows[0]?.id ?? null;
+  }
+
   async addRestroom(restroom, firstReview) {
     await this.insert(restroom, firstReview ? [firstReview] : []);
     return this.get(restroom.id);
@@ -310,6 +329,7 @@ class PgStore {
   }
 
   async createSession({ tokenHash, userId, createdAt }) {
+    await this.pool.query('DELETE FROM sessions WHERE created_at < $1', [sessionCutoff()]); // drop expired sessions
     await this.pool.query('INSERT INTO sessions (token_hash, user_id, created_at) VALUES ($1,$2,$3)', [
       tokenHash,
       userId,
@@ -319,8 +339,8 @@ class PgStore {
 
   async findSessionUser(tokenHash) {
     const { rows } = await this.pool.query(
-      'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1',
-      [tokenHash],
+      'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.created_at > $2',
+      [tokenHash, sessionCutoff()],
     );
     return toUser(rows[0]) || null;
   }

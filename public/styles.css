@@ -320,6 +320,24 @@ legend { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-sp
 .btn-link.danger { color: var(--bad); margin-top: 4px; }
 .you { color: var(--brand); font-weight: 600; }
 
+/* ---------- nearby places ---------- */
+
+.place-pin {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--surface); color: var(--brand);
+  border: 1.5px solid var(--brand);
+  box-shadow: 0 1px 3px rgb(0 0 0 / .25);
+}
+.place-pin.restroom { background: var(--brand); color: var(--brand-ink); border-color: #fff; }
+.place-pin .icon { width: 13px; height: 13px; }
+.leaflet-popup-content-wrapper { border-radius: 12px; background: var(--surface); color: var(--ink); }
+.leaflet-popup-tip { background: var(--surface); }
+.leaflet-popup-content { margin: 12px 14px; min-width: 190px; font: inherit; }
+.place-popup b { display: block; font-size: 15px; }
+.place-popup .muted { font-size: 12px; margin: 2px 0 10px; }
+.place-popup .btn { width: 100%; height: 32px; }
+
 /* ---------- map ---------- */
 
 .pin {

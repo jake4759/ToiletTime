@@ -19,12 +19,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError, api, searchPlaces, type PlaceResult } from '../api';
 import { useAuth } from '../auth';
 import { ReviewFields, isReviewComplete } from '../components/ReviewFields';
-import { Chip, Field, Icon, Section, Separator, SheetHeader } from '../components/ui';
+import { Button, Chip, Field, Icon, Section, Separator, SheetHeader } from '../components/ui';
 import { useTheme } from '../theme';
-import { PLACE_TYPES, emptyReview, type LatLng, type PlaceType, type RestroomDetail } from '../types';
+import { PLACE_TYPES, emptyReview, type LatLng, type Place, type PlaceType, type RestroomDetail } from '../types';
+
+/** Where to add a restroom, and the map place it belongs to when rating one from the map. */
+export interface AddRequest {
+  coords: LatLng;
+  place?: Place;
+}
 
 interface Props {
-  coords: LatLng | null;
+  request: AddRequest | null;
   onClose: () => void;
   onCreated: (restroom: RestroomDetail) => void;
 }
@@ -42,25 +48,42 @@ const blankDetails = () => ({
   babyChanging: false,
 });
 
-export function AddSheet({ coords, onClose, onCreated }: Props) {
-  // A fresh form for every pin drop; keep the last one rendered while the sheet animates closed.
-  const [shown, setShown] = useState(coords);
-  if (coords && coords !== shown) setShown(coords);
+export function AddSheet({ request, onClose, onCreated }: Props) {
+  // A fresh form for every request; keep the last one rendered while the sheet animates closed.
+  const [shown, setShown] = useState(request);
+  if (request && request !== shown) setShown(request);
 
   return (
-    <Modal visible={!!coords} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal visible={!!request} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       {shown && (
-        <AddForm key={`${shown.latitude},${shown.longitude}`} start={shown} onClose={onClose} onCreated={onCreated} />
+        <AddForm
+          key={shown.place?.osmId ?? `${shown.coords.latitude},${shown.coords.longitude}`}
+          request={shown}
+          onClose={onClose}
+          onCreated={onCreated}
+        />
       )}
     </Modal>
   );
 }
 
-function AddForm({ start, onClose, onCreated }: Omit<Props, 'coords'> & { start: LatLng }) {
+const detailsFromPlace = (p: Place) => ({
+  name: p.name,
+  type: p.type,
+  address: p.address,
+  city: p.city,
+  country: p.country,
+  free: p.free,
+  accessible: p.accessible,
+  babyChanging: p.babyChanging,
+});
+
+function AddForm({ request, onClose, onCreated }: Omit<Props, 'request'> & { request: AddRequest }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
-  const [details, setDetails] = useState(blankDetails);
+  const { coords: start, place } = request;
+  const [details, setDetails] = useState(() => (place ? detailsFromPlace(place) : blankDetails()));
   const [position, setPosition] = useState<LatLng>(start);
   const [review, setReview] = useState(emptyReview);
   const [query, setQuery] = useState('');
@@ -131,7 +154,13 @@ function AddForm({ start, onClose, onCreated }: Omit<Props, 'coords'> & { start:
   const publish = async () => {
     setSubmitting(true);
     try {
-      const created = await api.create({ ...details, lat: position.latitude, lng: position.longitude, review });
+      const created = await api.create({
+        ...details,
+        osmId: place?.osmId,
+        lat: position.latitude,
+        lng: position.longitude,
+        review,
+      });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       onCreated(created);
     } catch (e) {
@@ -150,7 +179,7 @@ function AddForm({ start, onClose, onCreated }: Omit<Props, 'coords'> & { start:
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <SheetHeader
-        title="Add Restroom"
+        title={place ? 'Rate Restroom' : 'Add Restroom'}
         left={{ label: 'Cancel', onPress: onClose }}
         right={{ label: 'Publish', onPress: publish, bold: true, disabled: !canPublish, loading: submitting }}
       />
@@ -160,37 +189,51 @@ function AddForm({ start, onClose, onCreated }: Omit<Props, 'coords'> & { start:
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
       >
-        <Section title="Find the business" footer="Search to fill in the details automatically, or enter them below.">
-          <View style={styles.searchRow}>
-            <Icon name="magnifyingglass" size={16} color={theme.muted} />
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search nearby businesses"
-              placeholderTextColor={theme.muted}
-              clearButtonMode="while-editing"
-              autoCorrect={false}
-              style={[styles.searchInput, { color: theme.text }]}
-            />
-            {searching && <ActivityIndicator />}
+        {place && (
+          <View style={styles.placeHeader}>
+            <Text style={[styles.placeKicker, { color: theme.muted }]}>{PLACE_TYPES[place.type]}</Text>
+            <Text style={[styles.placeName, { color: theme.text }]}>{place.name}</Text>
+            {!!(place.address || place.city) && (
+              <Text style={[styles.placeAddress, { color: theme.textSecondary }]}>
+                {[place.address, place.city].filter(Boolean).join(', ')}
+              </Text>
+            )}
           </View>
-          {visibleResults.map((r) => (
-            <View key={r.id}>
-              <Separator />
-              <Pressable
-                onPress={() => pickResult(r)}
-                style={({ pressed }) => [styles.result, pressed && { backgroundColor: theme.surfaceAlt }]}
-              >
-                <Text style={[styles.resultName, { color: theme.text }]} numberOfLines={1}>
-                  {r.name}
-                </Text>
-                <Text style={[styles.resultSub, { color: theme.muted }]} numberOfLines={1}>
-                  {r.subtitle}
-                </Text>
-              </Pressable>
+        )}
+
+        {!place && (
+          <Section title="Find the business" footer="Search to fill in the details automatically, or enter them below.">
+            <View style={styles.searchRow}>
+              <Icon name="magnifyingglass" size={16} color={theme.muted} />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search nearby businesses"
+                placeholderTextColor={theme.muted}
+                clearButtonMode="while-editing"
+                autoCorrect={false}
+                style={[styles.searchInput, { color: theme.text }]}
+              />
+              {searching && <ActivityIndicator />}
             </View>
-          ))}
-        </Section>
+            {visibleResults.map((r) => (
+              <View key={r.id}>
+                <Separator />
+                <Pressable
+                  onPress={() => pickResult(r)}
+                  style={({ pressed }) => [styles.result, pressed && { backgroundColor: theme.surfaceAlt }]}
+                >
+                  <Text style={[styles.resultName, { color: theme.text }]} numberOfLines={1}>
+                    {r.name}
+                  </Text>
+                  <Text style={[styles.resultSub, { color: theme.muted }]} numberOfLines={1}>
+                    {r.subtitle}
+                  </Text>
+                </Pressable>
+              </View>
+            ))}
+          </Section>
+        )}
 
         <Section title="Location" footer="Drag the pin to the restroom's exact location.">
           <MapView
@@ -246,6 +289,21 @@ function AddForm({ start, onClose, onCreated }: Omit<Props, 'coords'> & { start:
         </Section>
 
         <ReviewFields value={review} onChange={setReview} />
+
+        <View style={styles.footer}>
+          <Button
+            title={place ? 'Publish Rating' : 'Publish'}
+            icon="checkmark"
+            onPress={publish}
+            loading={submitting}
+            disabled={!canPublish}
+          />
+          {!canPublish && (
+            <Text style={[styles.footerHint, { color: theme.muted }]}>
+              {!details.name.trim() ? 'Add the business name to publish.' : 'Rate all four categories to publish.'}
+            </Text>
+          )}
+        </View>
       </ScrollView>
     </View>
   );
@@ -263,6 +321,12 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  placeHeader: { marginHorizontal: 32, marginBottom: 24 },
+  placeKicker: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.6 },
+  placeName: { fontSize: 26, fontWeight: '700', letterSpacing: -0.3, marginTop: 4 },
+  placeAddress: { fontSize: 15, marginTop: 4 },
+  footer: { marginHorizontal: 16, gap: 10 },
+  footerHint: { fontSize: 13, textAlign: 'center' },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, minHeight: 46 },
   searchInput: { flex: 1, fontSize: 17, paddingVertical: 12 },
   result: { paddingHorizontal: 16, paddingVertical: 10, gap: 2 },

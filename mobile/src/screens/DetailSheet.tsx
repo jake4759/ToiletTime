@@ -141,6 +141,15 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
         >
           <Text style={[styles.writingFor, { color: theme.muted }]}>{detail.name}</Text>
           <ReviewFields value={draft} onChange={setDraft} />
+          <View style={styles.writeFooter}>
+            <Button
+              title={myReview ? 'Update Review' : 'Post Review'}
+              icon="checkmark"
+              onPress={submit}
+              loading={submitting}
+              disabled={!isReviewComplete(draft)}
+            />
+          </View>
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
@@ -319,5 +328,6 @@ const styles = StyleSheet.create({
   avatarText: { fontWeight: '600', fontSize: 13 },
   reviewAuthor: { fontSize: 16, fontWeight: '600' },
   reviewBody: { fontSize: 16, lineHeight: 22 },
+  writeFooter: { marginHorizontal: 16 },
   writingFor: { fontSize: 15, textAlign: 'center', marginBottom: 16, marginHorizontal: 32 },
 });

@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 
-import type { NewRestroom, PlaceType, Restroom, RestroomDetail, Review, ReviewDraft, User } from './types';
+import type { NewRestroom, Place, PlaceType, Restroom, RestroomDetail, Review, ReviewDraft, User } from './types';
 
 /**
  * Where the ToiletTime server lives. Set EXPO_PUBLIC_API_URL for a deployed server;
@@ -64,6 +64,11 @@ export const api = {
   create: (restroom: NewRestroom) => request<RestroomDetail>('/api/bathrooms', { body: restroom }),
   review: (id: string, review: ReviewDraft) =>
     request<Review>(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, { body: review }),
+
+  places: (b: { south: number; west: number; north: number; east: number }) =>
+    request<{ places: Place[]; zoomIn: boolean }>(
+      `/api/places?south=${b.south}&west=${b.west}&north=${b.north}&east=${b.east}`,
+    ),
 
   signUp: (name: string, email: string, password: string) =>
     request<Session>('/api/auth/signup', { body: { name, email, password } }),

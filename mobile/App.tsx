@@ -11,13 +11,27 @@ import { AuthProvider, useAuth } from './src/auth';
 import { Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
 import { distanceMeters, formatDistance } from './src/geo';
 import { AccountSheet } from './src/screens/AccountSheet';
-import { AddSheet } from './src/screens/AddSheet';
+import { AddSheet, type AddRequest } from './src/screens/AddSheet';
 import { DetailSheet } from './src/screens/DetailSheet';
 import { ListSheet } from './src/screens/ListSheet';
 import { formatRating, plural, ratingColor, useTheme } from './src/theme';
-import { PLACE_TYPES, type LatLng, type Restroom } from './src/types';
+import { PLACE_TYPES, type LatLng, type Place, type PlaceType, type Restroom } from './src/types';
 
 const WORLD: Region = { latitude: 30, longitude: 0, latitudeDelta: 120, longitudeDelta: 180 };
+/** Nearby places load once the map is zoomed in at least this far (degrees of latitude on screen). */
+const PLACES_MAX_DELTA = 0.1;
+
+const TYPE_ICONS: Record<PlaceType, SymbolName> = {
+  public: 'toilet.fill',
+  restaurant: 'fork.knife',
+  cafe: 'cup.and.saucer.fill',
+  store: 'bag.fill',
+  mall: 'building.2.fill',
+  gas_station: 'fuelpump.fill',
+  bar: 'wineglass.fill',
+  hotel: 'bed.double.fill',
+  other: 'mappin',
+};
 
 export default function App() {
   return (
@@ -42,11 +56,17 @@ function MapScreen() {
 
   const [list, setList] = useState<{ open: boolean; focusSearch: boolean }>({ open: false, focusSearch: false });
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [addCoords, setAddCoords] = useState<LatLng | null>(null);
+  const [addRequest, setAddRequest] = useState<AddRequest | null>(null);
   const pendingDetail = useRef<string | null>(null);
   const { user } = useAuth();
   const [account, setAccount] = useState<{ open: boolean; reason: string | null }>({ open: false, reason: null });
-  const addAfterSignIn = useRef<LatLng | null>(null);
+  const addAfterSignIn = useRef<AddRequest | null>(null);
+
+  const [places, setPlaces] = useState<Place[]>([]);
+  const [zoomedOut, setZoomedOut] = useState(true);
+  const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  const placesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const placesRequest = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -73,6 +93,52 @@ function MapScreen() {
 
   const selected = useMemo(() => restrooms.find((r) => r.id === selectedId) ?? null, [restrooms, selectedId]);
 
+  // Businesses and mapped restrooms that nobody has rated yet (rated ones show as restroom pins).
+  const unratedPlaces = useMemo(() => {
+    const rated = new Set(restrooms.map((r) => r.osmId).filter(Boolean));
+    return places.filter((p) => !rated.has(p.osmId));
+  }, [places, restrooms]);
+  const selectedPlace = useMemo(
+    () => unratedPlaces.find((p) => p.osmId === selectedPlaceId) ?? null,
+    [unratedPlaces, selectedPlaceId],
+  );
+
+  const loadPlaces = (region: Region) => {
+    if (placesTimer.current) clearTimeout(placesTimer.current);
+    if (region.latitudeDelta > PLACES_MAX_DELTA) {
+      setZoomedOut(true);
+      return;
+    }
+    setZoomedOut(false);
+    placesTimer.current = setTimeout(async () => {
+      const half = (d: number) => Math.min(d / 2, 0.06);
+      const bbox = {
+        south: Math.max(-90, region.latitude - half(region.latitudeDelta)),
+        north: Math.min(90, region.latitude + half(region.latitudeDelta)),
+        west: Math.max(-180, region.longitude - half(region.longitudeDelta)),
+        east: Math.min(180, region.longitude + half(region.longitudeDelta)),
+      };
+      const request = ++placesRequest.current;
+      try {
+        const result = await api.places(bbox);
+        if (request !== placesRequest.current) return; // a newer map position already asked
+        setPlaces((prev) => {
+          // Keep places already on screen so pins don't flicker while panning.
+          const byId = new Map(prev.map((p) => [p.osmId, p]));
+          for (const p of result.places) byId.set(p.osmId, p);
+          return [...byId.values()].slice(-800);
+        });
+      } catch {
+        // Places are a bonus; rated restrooms still show if this fails.
+      }
+    }, 450);
+  };
+
+  const selectRestroom = (id: string | null) => {
+    setSelectedId(id);
+    if (id) setSelectedPlaceId(null);
+  };
+
   const focusOn = (r: Restroom) => {
     mapRef.current?.animateToRegion(
       { latitude: r.lat, longitude: r.lng, latitudeDelta: 0.02, longitudeDelta: 0.02 },
@@ -90,14 +156,26 @@ function MapScreen() {
     mapRef.current?.animateToRegion({ ...here, latitudeDelta: 0.03, longitudeDelta: 0.03 }, 400);
   };
 
+  const openAdd = (request: AddRequest) => {
+    if (user) return setAddRequest(request);
+    // Ask the user to sign in first, then continue to the add sheet.
+    addAfterSignIn.current = request;
+    setAccount({
+      open: true,
+      reason: request.place ? 'Sign in to rate this restroom.' : 'Sign in to add a restroom. It only takes a moment.',
+    });
+  };
+
   const startAdd = async (coords?: LatLng) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const camera = coords || userLocation ? null : await mapRef.current?.getCamera();
     const target = coords ?? userLocation ?? camera?.center ?? { latitude: WORLD.latitude, longitude: WORLD.longitude };
-    if (user) return setAddCoords(target);
-    // Ask the user to sign in first, then continue to the add sheet.
-    addAfterSignIn.current = target;
-    setAccount({ open: true, reason: 'Sign in to add a restroom. It only takes a moment.' });
+    openAdd({ coords: target });
+  };
+
+  const ratePlace = (place: Place) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    openAdd({ coords: { latitude: place.lat, longitude: place.lng }, place });
   };
 
   return (
@@ -112,10 +190,25 @@ function MapScreen() {
         showsCompass={false}
         userInterfaceStyle={theme.dark ? 'dark' : 'light'}
         onPress={(e) => {
-          if (e.nativeEvent.action !== 'marker-press') setSelectedId(null);
+          if (e.nativeEvent.action === 'marker-press') return;
+          setSelectedId(null);
+          setSelectedPlaceId(null);
         }}
         onLongPress={(e) => startAdd(e.nativeEvent.coordinate)}
+        onRegionChangeComplete={loadPlaces}
       >
+        {unratedPlaces.map((p) => (
+          <PlacePin
+            key={p.osmId}
+            place={p}
+            selected={p.osmId === selectedPlaceId}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setSelectedPlaceId(p.osmId);
+              setSelectedId(null);
+            }}
+          />
+        ))}
         {restrooms.map((r) => (
           <RestroomPin
             key={r.id}
@@ -123,7 +216,7 @@ function MapScreen() {
             selected={r.id === selectedId}
             onPress={() => {
               Haptics.selectionAsync();
-              setSelectedId(r.id);
+              selectRestroom(r.id);
               focusOn(r);
             }}
           />
@@ -182,15 +275,20 @@ function MapScreen() {
       {/* Bottom: selected preview + actions */}
       <View style={[styles.bottom, { paddingBottom: insets.bottom + 12 }]} pointerEvents="box-none">
         {selected && <PreviewCard restroom={selected} origin={userLocation} onPress={() => setDetailId(selected.id)} />}
+        {selectedPlace && (
+          <PlaceCard place={selectedPlace} origin={userLocation} onRate={() => ratePlace(selectedPlace)} />
+        )}
         <View style={styles.actionRow}>
           <RoundButton icon="list.bullet" label="List" onPress={() => setList({ open: true, focusSearch: false })} />
           <Button title="Add Restroom" icon="plus" onPress={() => startAdd()} style={[styles.flex, styles.shadow]} />
           <RoundButton icon="location.fill" label="My location" onPress={locateMe} />
         </View>
-        {!selected && !loadError && (
+        {!selected && !selectedPlace && !loadError && (
           <View style={[styles.hint, { backgroundColor: theme.surface }]}>
             <Text style={[styles.hintText, { color: theme.textSecondary }]}>
-              Touch and hold the map to add a restroom there
+              {zoomedOut
+                ? 'Zoom in to see restaurants, stores and restrooms'
+                : 'Tap a place to rate its restroom, or touch and hold to add one'}
             </Text>
           </View>
         )}
@@ -212,7 +310,7 @@ function MapScreen() {
           pendingDetail.current = null;
           const r = restrooms.find((x) => x.id === id);
           if (!id || !r) return;
-          setSelectedId(id);
+          selectRestroom(id);
           focusOn(r);
           setDetailId(id);
         }}
@@ -226,19 +324,19 @@ function MapScreen() {
         onClose={() => setAccount((a) => ({ ...a, open: false }))}
         onDismiss={() => {
           // Continue to the add sheet once the account sheet has finished closing.
-          const target = addAfterSignIn.current;
+          const request = addAfterSignIn.current;
           addAfterSignIn.current = null;
-          if (target && user) setAddCoords(target);
+          if (request && user) setAddRequest(request);
         }}
       />
 
       <AddSheet
-        coords={addCoords}
-        onClose={() => setAddCoords(null)}
+        request={addRequest}
+        onClose={() => setAddRequest(null)}
         onCreated={(created) => {
-          setAddCoords(null);
+          setAddRequest(null);
           load();
-          setSelectedId(created.id);
+          selectRestroom(created.id);
           focusOn(created);
         }}
       />
@@ -272,6 +370,73 @@ const RestroomPin = memo(function RestroomPin({
     </Marker>
   );
 });
+
+const PlacePin = memo(function PlacePin({
+  place,
+  selected,
+  onPress,
+}: {
+  place: Place;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  const restroom = place.isRestroom;
+  return (
+    <Marker
+      key={`${place.osmId}-${selected}-${theme.dark}`}
+      coordinate={{ latitude: place.lat, longitude: place.lng }}
+      onPress={onPress}
+      tracksViewChanges={false}
+      anchor={{ x: 0.5, y: 0.5 }}
+      zIndex={selected ? 9 : 0}
+      accessibilityLabel={`${place.name}, not rated yet`}
+    >
+      <View
+        style={[
+          styles.placePin,
+          selected && styles.placePinSelected,
+          { backgroundColor: restroom ? theme.brand : theme.surface, borderColor: restroom ? '#fff' : theme.brand },
+        ]}
+      >
+        <Icon name={TYPE_ICONS[place.type]} size={selected ? 17 : 13} color={restroom ? theme.onBrand : theme.brand} />
+      </View>
+    </Marker>
+  );
+});
+
+function PlaceCard({ place, origin, onRate }: { place: Place; origin: LatLng | null; onRate: () => void }) {
+  const theme = useTheme();
+  const distance = origin
+    ? formatDistance(distanceMeters(origin, { latitude: place.lat, longitude: place.lng }))
+    : null;
+  const facts = [
+    place.accessible && 'Accessible',
+    place.babyChanging && 'Baby changing',
+    !place.free && 'Customers only',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <View style={[styles.preview, styles.shadow, { backgroundColor: theme.surface }]}>
+      <View style={[styles.placeIcon, { backgroundColor: theme.brandSoft }]}>
+        <Icon name={TYPE_ICONS[place.type]} size={18} color={theme.brand} />
+      </View>
+      <View style={styles.flex}>
+        <Text style={[styles.previewName, { color: theme.text }]} numberOfLines={1}>
+          {place.name}
+        </Text>
+        <Text style={[styles.previewSub, { color: theme.muted }]} numberOfLines={1}>
+          {[PLACE_TYPES[place.type], distance].filter(Boolean).join(' · ')}
+        </Text>
+        <Text style={[styles.previewSub, { color: theme.textSecondary }]} numberOfLines={1}>
+          {facts ? `Not rated yet · ${facts}` : 'Not rated yet'}
+        </Text>
+      </View>
+      <Button title="Rate" icon="star.fill" onPress={onRate} style={styles.rateButton} />
+    </View>
+  );
+}
 
 function PreviewCard({
   restroom,
@@ -378,4 +543,15 @@ const styles = StyleSheet.create({
   pinSelected: { minWidth: 44, height: 44, borderRadius: 22, borderWidth: 3 },
   pinText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   pinTextSelected: { fontSize: 15 },
+  placePin: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  placePinSelected: { width: 36, height: 36, borderRadius: 18, borderWidth: 2 },
+  placeIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  rateButton: { height: 40, paddingHorizontal: 14, borderRadius: 12 },
 });

@@ -24,6 +24,7 @@ export interface Restroom {
   accessible: boolean;
   free: boolean;
   babyChanging: boolean;
+  osmId?: string | null;
   createdAt: string;
   reviewCount: number;
   rating: number | null;
@@ -56,7 +57,24 @@ export interface ReviewDraft {
   comment: string;
 }
 
+/** A business or mapped restroom from OpenStreetMap that may not be rated yet. */
+export interface Place {
+  osmId: string;
+  name: string;
+  type: PlaceType;
+  isRestroom: boolean;
+  address: string;
+  city: string;
+  country: string;
+  lat: number;
+  lng: number;
+  free: boolean;
+  accessible: boolean;
+  babyChanging: boolean;
+}
+
 export interface NewRestroom {
+  osmId?: string;
   name: string;
   type: PlaceType;
   address: string;

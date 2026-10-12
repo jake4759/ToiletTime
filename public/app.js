@@ -102,6 +102,7 @@ async function refresh() {
   bathrooms = data.bathrooms;
   renderList();
   renderMarkers();
+  renderPlaces();
 }
 
 function renderList() {
@@ -133,6 +134,80 @@ function renderMarkers() {
     markerById.set(b.id, m);
   }
 }
+
+// ---------- nearby places (OpenStreetMap) ----------
+
+const PLACES_MIN_ZOOM = 15;
+const placesLayer = L.layerGroup().addTo(map);
+let places = [];
+let placesRequest = 0;
+
+const PLACE_ICONS = { public: 'toilet', restaurant: 'food', cafe: 'food', bar: 'food', store: 'bag', mall: 'bag', gas_station: 'pin', hotel: 'pin', other: 'pin' };
+
+function renderPlaces() {
+  placesLayer.clearLayers();
+  const rated = new Set(bathrooms.map((b) => b.osmId).filter(Boolean));
+  for (const p of places) {
+    if (rated.has(p.osmId)) continue;
+    const marker = L.marker([p.lat, p.lng], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div class="place-pin${p.isRestroom ? ' restroom' : ''}">${icon(PLACE_ICONS[p.type] || 'pin')}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        popupAnchor: [0, -10],
+      }),
+      title: p.name,
+    });
+    const facts = [p.accessible && 'Accessible', p.babyChanging && 'Baby changing', !p.free && 'Customers only'].filter(Boolean);
+    const popup = document.createElement('div');
+    popup.className = 'place-popup';
+    popup.innerHTML = `<b>${esc(p.name)}</b>
+      <div class="muted">${esc(TYPE_LABELS[p.type] || p.type)} · Not rated yet${facts.length ? ` · ${esc(facts.join(' · '))}` : ''}</div>
+      <button class="btn btn-primary" type="button">Rate this restroom</button>`;
+    popup.querySelector('button').addEventListener('click', () => {
+      map.closePopup();
+      requireAccount('Sign in to rate this restroom.', () => showAddDialog(L.latLng(p.lat, p.lng), p));
+    });
+    marker.bindPopup(popup).addTo(placesLayer);
+  }
+}
+
+let placesTimer;
+function loadPlaces() {
+  clearTimeout(placesTimer);
+  if (map.getZoom() < PLACES_MIN_ZOOM) {
+    placesLayer.clearLayers();
+    return;
+  }
+  placesTimer = setTimeout(async () => {
+    const c = map.getCenter();
+    const b = map.getBounds();
+    const half = (d) => Math.min(d / 2, 0.06);
+    const latHalf = half(b.getNorth() - b.getSouth());
+    const lngHalf = half(b.getEast() - b.getWest());
+    const lng = L.latLng(c.lat, c.lng).wrap().lng;
+    const area = {
+      south: Math.max(-90, c.lat - latHalf).toFixed(5),
+      north: Math.min(90, c.lat + latHalf).toFixed(5),
+      west: Math.max(-180, lng - lngHalf).toFixed(5),
+      east: Math.min(180, lng + lngHalf).toFixed(5),
+    };
+    const request = ++placesRequest;
+    try {
+      const data = await api(`/api/places?${new URLSearchParams(area)}`);
+      if (request !== placesRequest) return;
+      const byId = new Map(places.map((p) => [p.osmId, p]));
+      for (const p of data.places) byId.set(p.osmId, p);
+      places = [...byId.values()].slice(-800);
+      renderPlaces();
+    } catch {
+      // Nearby places are optional; rated restrooms still show.
+    }
+  }, 400);
+}
+
+map.on('moveend', loadPlaces);
 
 function setActive(id) {
   const prev = activeId;
@@ -372,13 +447,26 @@ function openAddDialog(latlng) {
   requireAccount('Sign in to add a restroom.', () => showAddDialog(latlng));
 }
 
-function showAddDialog(latlng) {
+function showAddDialog(latlng, place) {
   const form = $('#addForm');
   form.reset();
   $('#addError').textContent = '';
   $('#lookupResults').innerHTML = '';
   $('#addRating').innerHTML = reviewFields();
   bindStars($('#addRating'));
+  form.osmId.value = place ? place.osmId : '';
+  $('#addTitle').textContent = place ? `Rate ${place.name}` : 'Add a restroom';
+  $('#addForm').querySelector('#lookup').closest('.field-icon').hidden = !!place;
+  if (place) {
+    form.name.value = place.name;
+    form.type.value = place.type;
+    form.address.value = place.address;
+    form.city.value = place.city;
+    form.country.value = place.country;
+    form.free.checked = place.free;
+    form.accessible.checked = place.accessible;
+    form.babyChanging.checked = place.babyChanging;
+  }
   const { lat, lng } = latlng || map.getCenter();
   setCoords(lat, lng);
   $('#addDialog').showModal();
@@ -487,6 +575,7 @@ $('#addForm').addEventListener('submit', async (e) => {
         free: fd.has('free'),
         accessible: fd.has('accessible'),
         babyChanging: fd.has('babyChanging'),
+        osmId: fd.get('osmId') || undefined,
         review,
       },
     });
@@ -628,6 +717,7 @@ async function restoreSession() {
   await restoreSession();
   try {
     await refresh();
+    loadPlaces();
   } catch (err) {
     $('#list').innerHTML = `<li class="empty">Could not load restrooms. ${esc(err.message)}</li>`;
   }

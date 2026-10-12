@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const { fetchPlaces, parseBbox } = require('./places');
 const { createStore } = require('./store');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -59,6 +60,7 @@ function rateLimiter(limit) {
 
 const allowWrite = rateLimiter(Number(process.env.WRITE_LIMIT) || 30);
 const allowAuthAttempt = rateLimiter(Number(process.env.AUTH_LIMIT) || 20);
+const allowPlacesLookup = rateLimiter(Number(process.env.PLACES_LIMIT) || 300);
 
 setInterval(() => {
   const now = Date.now();
@@ -86,6 +88,8 @@ async function verifyPassword(password, stored) {
   const actual = await scrypt(password, Buffer.from(salt, 'hex'));
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
+
+const dummyHash = hashPassword(crypto.randomBytes(16).toString('hex'));
 
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, createdAt: u.createdAt });
@@ -139,8 +143,9 @@ async function handleAuth(req, res, store, action) {
     if (!allowAuthAttempt(req)) return send(res, 429, { error: 'Too many attempts. Please try again in a few minutes.' });
     const body = await readJson(req);
     const user = await store.findUserByEmail(String(body.email || '').trim().toLowerCase());
-    const ok = user && (await verifyPassword(String(body.password || ''), user.passwordHash));
-    if (!ok) return send(res, 401, { error: 'Incorrect email or password.' });
+    // Check a password even when the email is unknown, so response times don't reveal which emails exist.
+    const ok = await verifyPassword(String(body.password || ''), user ? user.passwordHash : await dummyHash);
+    if (!user || !ok) return send(res, 401, { error: 'Incorrect email or password.' });
     return send(res, 200, await startSession(store, user));
   }
 
@@ -208,10 +213,17 @@ function validateReview(body, user) {
   };
 }
 
+function osmId(v) {
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v !== 'string' || !/^(node|way|relation)\/\d{1,15}$/.test(v)) throw new ValidationError('invalid place');
+  return v;
+}
+
 function validateBathroom(body) {
   const type = PLACE_TYPES.includes(body.type) ? body.type : 'other';
   return {
     id: crypto.randomUUID(),
+    osmId: osmId(body.osmId),
     name: str(body.name, 100, true),
     type,
     address: str(body.address, 200),
@@ -226,9 +238,40 @@ function validateBathroom(body) {
   };
 }
 
+// ---------- security headers ----------
+
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data: https://*.basemaps.cartocdn.com",
+  "connect-src 'self' https://nominatim.openstreetmap.org",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join('; ');
+
+const isHttps = (req) => process.env.TRUST_PROXY && req.headers['x-forwarded-proto'] === 'https';
+
+function securityHeaders(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
+  res.setHeader('Content-Security-Policy', CSP);
+  if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+}
+
 function send(res, status, data) {
   const body = JSON.stringify(data);
-  res.writeHead(status, { 'Content-Type': MIME['.json'], 'Content-Length': Buffer.byteLength(body) });
+  res.writeHead(status, {
+    'Content-Type': MIME['.json'],
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+  });
   res.end(body);
 }
 
@@ -266,6 +309,21 @@ async function handleApi(req, res, url) {
 
   if (parts[1] === 'health') return send(res, 200, { ok: true });
   if (parts[1] === 'auth' && parts.length === 3) return handleAuth(req, res, store, parts[2]);
+
+  // GET /api/places?south=&west=&north=&east=  (businesses and mapped restrooms from OpenStreetMap)
+  if (parts[1] === 'places' && parts.length === 2 && req.method === 'GET') {
+    if (!allowPlacesLookup(req)) return send(res, 429, { error: 'Too many map requests. Please slow down.' });
+    const bbox = parseBbox(url.searchParams);
+    if (bbox === undefined) return send(res, 400, { error: 'invalid area' });
+    if (bbox === null) return send(res, 200, { places: [], zoomIn: true });
+    try {
+      return send(res, 200, { places: await fetchPlaces(bbox), zoomIn: false });
+    } catch (err) {
+      console.error('Places lookup failed:', err.message);
+      return send(res, 502, { error: 'Nearby places are unavailable right now.' });
+    }
+  }
+
   if (parts[1] !== 'bathrooms') return send(res, 404, { error: 'not found' });
 
   let user = null;
@@ -304,6 +362,12 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const bathroom = validateBathroom(body);
     const review = body.review ? validateReview(body.review, user) : null;
+    // A place from the map that someone already rated: add the review to that restroom instead.
+    const existingId = bathroom.osmId && (await store.findIdByOsmId(bathroom.osmId));
+    if (existingId) {
+      if (review) await store.addReview(existingId, review);
+      return send(res, 200, await store.get(existingId));
+    }
     return send(res, 201, await store.addRestroom(bathroom, review));
   }
 
@@ -325,7 +389,13 @@ async function handleApi(req, res, url) {
 // ---------- static files ----------
 
 function serveStatic(req, res, url) {
-  let rel = decodeURIComponent(url.pathname);
+  let rel;
+  try {
+    rel = decodeURIComponent(url.pathname);
+  } catch {
+    res.writeHead(400).end('Bad request');
+    return;
+  }
   if (rel === '/') rel = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) {
@@ -337,7 +407,10 @@ function serveStatic(req, res, url) {
       res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
       return;
     }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+      'Cache-Control': file.includes(`${path.sep}vendor${path.sep}`) ? 'public, max-age=604800' : 'no-cache',
+    });
     res.end(data);
   });
 }
@@ -346,6 +419,13 @@ function serveStatic(req, res, url) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    securityHeaders(req, res);
+    // Behind a proxy that terminates TLS (e.g. Render), send plain-HTTP visitors to HTTPS.
+    const host = req.headers.host || '';
+    if (process.env.TRUST_PROXY && req.headers['x-forwarded-proto'] === 'http' && /^[a-z0-9.-]+(:\d+)?$/i.test(host)) {
+      res.writeHead(308, { Location: `https://${host}${req.url}` }).end();
+      return;
+    }
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' });
