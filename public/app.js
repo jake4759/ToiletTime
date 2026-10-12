@@ -71,8 +71,32 @@ function toast(message) {
   el.className = 'toast';
   el.textContent = message;
   document.body.append(el);
-  setTimeout(() => el.remove(), 2600);
+  setTimeout(() => el.remove(), Math.max(2600, message.length * 60));
 }
+
+/** Where you are now, sent with reviews so the server can check you've been there (null if unavailable). */
+function currentHere() {
+  if (!navigator.geolocation) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+    );
+  });
+}
+
+/** A short note about what a review earned, if anything. */
+function rewardText(rewards) {
+  if (!rewards) return '';
+  const items = rewards.newItems.map((i) => i.name);
+  if (items.length) return ` Unlocked: ${items.join(', ')}! Dress up your character in the ToiletTime app.`;
+  if (rewards.levelUp) return ` You're now a ${rewards.level.name}!`;
+  return '';
+}
+
+const NOT_VISITED_HINT = ' If you\'re there now, allow location access and try again.';
+const errorText = (err) => (err.code === 'not_visited' ? err.message + NOT_VISITED_HINT : err.message);
 
 // ---------- map ----------
 
@@ -391,6 +415,7 @@ async function openDetail(id, { pan = true } = {}) {
     </div>
     <form id="reviewForm" class="review-form" hidden novalidate>
       ${reviewFields()}
+      <p class="muted visit-note">You can rate restrooms you've been to in the last 24 hours. We'll ask for your location to check.</p>
       <div class="actions">
         <p class="error" role="alert"></p>
         <button type="button" class="btn" id="cancelReview">Cancel</button>
@@ -426,15 +451,15 @@ async function openDetail(id, { pan = true } = {}) {
     e.preventDefault();
     try {
       const fd = new FormData(form);
-      await api(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, {
+      const posted = await api(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, {
         method: 'POST',
-        body: { ...readStars(form), comment: fd.get('comment') },
+        body: { ...readStars(form), comment: fd.get('comment'), here: await currentHere() },
       });
       await refresh();
       await openDetail(id, { pan: false });
-      toast(mine ? 'Review updated.' : 'Review posted.');
+      toast((mine ? 'Review updated.' : 'Review posted.') + rewardText(posted.rewards));
     } catch (ex) {
-      form.querySelector('.error').textContent = ex.message;
+      form.querySelector('.error').textContent = errorText(ex);
     }
   };
 }
@@ -659,14 +684,15 @@ $('#addForm').addEventListener('submit', async (e) => {
         babyChanging: fd.has('babyChanging'),
         osmId: fd.get('osmId') || undefined,
         review,
+        here: await currentHere(),
       },
     });
     $('#addDialog').close();
     await refresh();
     await openDetail(created.id);
-    toast('Restroom added.');
+    toast('Restroom added.' + rewardText(created.rewards));
   } catch (err) {
-    $('#addError').textContent = err.message;
+    $('#addError').textContent = errorText(err);
   }
 });
 

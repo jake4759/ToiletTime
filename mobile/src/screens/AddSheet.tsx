@@ -21,7 +21,8 @@ import { useAuth } from '../auth';
 import { ReviewFields, isReviewComplete } from '../components/ReviewFields';
 import { Button, Chip, Field, Icon, Section, Separator, SheetHeader } from '../components/ui';
 import { useTheme } from '../theme';
-import { PLACE_TYPES, emptyReview, type LatLng, type Place, type PlaceType, type RestroomDetail } from '../types';
+import { PLACE_TYPES, emptyReview, type LatLng, type Place, type PlaceType, type RestroomDetail, type Rewards } from '../types';
+import { currentHere } from '../visits';
 
 /** Where to add a restroom, and the map place it belongs to when rating one from the map. */
 export interface AddRequest {
@@ -32,7 +33,7 @@ export interface AddRequest {
 interface Props {
   request: AddRequest | null;
   onClose: () => void;
-  onCreated: (restroom: RestroomDetail) => void;
+  onCreated: (restroom: RestroomDetail & { rewards?: Rewards }) => void;
 }
 
 type Details = ReturnType<typeof blankDetails>;
@@ -154,13 +155,16 @@ function AddForm({ request, onClose, onCreated }: Omit<Props, 'request'> & { req
   const publish = async () => {
     setSubmitting(true);
     try {
-      const created = await api.create({
-        ...details,
-        osmId: place?.osmId,
-        lat: position.latitude,
-        lng: position.longitude,
-        review,
-      });
+      const created = await api.create(
+        {
+          ...details,
+          osmId: place?.osmId,
+          lat: position.latitude,
+          lng: position.longitude,
+          review,
+        },
+        await currentHere(),
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       onCreated(created);
     } catch (e) {
@@ -168,6 +172,10 @@ function AddForm({ request, onClose, onCreated }: Omit<Props, 'request'> & { req
         await expire();
         Alert.alert('Please sign in again', 'Your session has ended. Sign in, then add the restroom again.');
         onClose();
+        return;
+      }
+      if (e instanceof ApiError && e.code === 'not_visited') {
+        Alert.alert('Were you here?', e.message);
         return;
       }
       Alert.alert("Couldn't add restroom", (e as Error).message);

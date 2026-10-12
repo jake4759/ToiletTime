@@ -11,12 +11,15 @@ import { AuthProvider, useAuth } from './src/auth';
 import { BlockedProvider } from './src/safety';
 import { Avatar, Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
 import { distanceMeters, formatDistance } from './src/geo';
-import { AccountSheet, CHARACTER_COLORS } from './src/screens/AccountSheet';
+import { Character } from './src/character/Character';
+import { useRewards } from './src/character/rewards';
+import { AccountSheet } from './src/screens/AccountSheet';
 import { AddSheet, type AddRequest } from './src/screens/AddSheet';
 import { DetailSheet } from './src/screens/DetailSheet';
 import { ListSheet } from './src/screens/ListSheet';
 import { formatRating, plural, ratingColor, useTheme } from './src/theme';
-import { PLACE_TYPES, type LatLng, type Place, type PlaceType, type Restroom } from './src/types';
+import { PLACE_TYPES, type Here, type LatLng, type Place, type PlaceType, type Restroom } from './src/types';
+import { useVisitPings } from './src/visits';
 
 const WORLD: Region = { latitude: 30, longitude: 0, latitudeDelta: 120, longitudeDelta: 180 };
 /** Nearby places load once the map is zoomed in at least this far (degrees of latitude on screen). */
@@ -55,6 +58,7 @@ function MapScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<LatLng | null>(null);
+  const [fix, setFix] = useState<Here | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [list, setList] = useState<{ open: boolean; focusSearch: boolean }>({ open: false, focusSearch: false });
@@ -95,11 +99,13 @@ function MapScreen() {
       const pos = (await Location.getLastKnownPositionAsync()) ?? (await Location.getCurrentPositionAsync());
       const here = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
       setUserLocation(here);
+      setFix({ lat: here.latitude, lng: here.longitude, accuracy: pos.coords.accuracy ?? 50 });
       mapRef.current?.animateToRegion({ ...here, latitudeDelta: 0.03, longitudeDelta: 0.03 }, 600);
       // Keep your character on the map in step with where you are.
-      watcher = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, distanceInterval: 15 }, (p) =>
-        setUserLocation({ latitude: p.coords.latitude, longitude: p.coords.longitude }),
-      );
+      watcher = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, distanceInterval: 15 }, (p) => {
+        setUserLocation({ latitude: p.coords.latitude, longitude: p.coords.longitude });
+        setFix({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy ?? 50 });
+      });
       if (cancelled) watcher.remove();
     })().catch(() => {});
     return () => {
@@ -107,6 +113,10 @@ function MapScreen() {
       watcher?.remove();
     };
   }, [load]);
+
+  // Remember which restrooms you pass by, so you can rate them later today.
+  useVisitPings(!!user && !missing, fix, restrooms, places);
+  const { celebrate, closet } = useRewards();
 
   const closeAccount = useCallback(() => setAccount((a) => ({ ...a, open: false })), []);
 
@@ -383,11 +393,14 @@ function MapScreen() {
         onClose={() => setAddRequest(null)}
         onCreated={(created) => {
           setAddRequest(null);
+          // Let the sheet slide away before celebrating.
+          setTimeout(() => celebrate(created.rewards), 450);
           load();
           selectRestroom(created.id);
           focusOn(created);
         }}
       />
+      {closet}
     </View>
   );
 }
@@ -419,28 +432,24 @@ const RestroomPin = memo(function RestroomPin({
   );
 });
 
-/** You on the map: your profile picture (or a person) inside a ring in your chosen color. */
+/** You on the map: your Flush Buddy, dressed in whatever you picked in the Closet. */
 function CharacterMarker({ coordinate }: { coordinate: LatLng }) {
   const { user } = useAuth();
-  const color = user?.markerColor ?? CHARACTER_COLORS[0];
+  const look = user?.character;
   return (
     <Marker
-      // Remount when the look changes; one marker can afford to track changes so the photo appears once loaded.
-      key={`me-${color}-${user?.avatarUrl ?? 'none'}`}
+      // Remount when the outfit changes so the marker's snapshot refreshes.
+      key={`me-${look ? Object.values(look).join('-') : 'default'}`}
       coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
+      // Stand on the spot: the feet are at the bottom of the drawing.
+      anchor={{ x: 0.5, y: 0.93 }}
       zIndex={20}
+      // Just one marker, so it can afford to track changes (the drawing renders after the first frame).
       tracksViewChanges
       accessibilityLabel="You are here"
     >
-      <View style={[styles.character, { borderColor: color }]}>
-        {user?.avatarUrl ? (
-          <Avatar url={user.avatarUrl} name={user.username} size={36} />
-        ) : (
-          <View style={[styles.characterBody, { backgroundColor: color }]}>
-            <Icon name="person.fill" size={22} color="#fff" />
-          </View>
-        )}
+      <View style={styles.character}>
+        <Character character={look} height={64} />
       </View>
     </Marker>
   );
@@ -592,19 +601,12 @@ const styles = StyleSheet.create({
   count: { fontSize: 15, fontVariant: ['tabular-nums'] },
   divider: { width: StyleSheet.hairlineWidth, height: 24 },
   character: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    borderWidth: 4,
-    backgroundColor: '#fff',
     alignItems: 'center',
-    justifyContent: 'center',
     shadowColor: '#000',
     shadowOpacity: 0.3,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
   },
-  characterBody: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   banner: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, padding: 14 },
   bannerTitle: { fontSize: 15, fontWeight: '600' },
   bannerText: { fontSize: 13, marginTop: 2 },

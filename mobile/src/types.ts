@@ -1,3 +1,5 @@
+import type { CharacterConfig } from './character/draw';
+
 export const PLACE_TYPES = {
   restaurant: 'Restaurant',
   cafe: 'Café',
@@ -121,6 +123,61 @@ export interface User {
   emailVerified: boolean;
   provider: string;
   createdAt: string;
+  character: CharacterConfig;
+  reviewCount: number;
+  level: Level;
+  nextUnlock: NextUnlock | null;
+}
+
+export interface Level {
+  name: string;
+  next: { name: string; at: number } | null;
+}
+
+export interface UnlockedItem {
+  slot: string;
+  id: string;
+  name: string;
+}
+
+export interface NextUnlock {
+  at: number;
+  items: UnlockedItem[];
+}
+
+/** What a new review earned: your progress and any closet items it unlocked. */
+export interface Rewards {
+  reviewCount: number;
+  level: Level;
+  nextUnlock: NextUnlock | null;
+  levelUp: boolean;
+  newItems: UnlockedItem[];
+}
+
+/** Where you are, sent with a review so the server can check you've been to the restroom. */
+export interface Here {
+  lat: number;
+  lng: number;
+  accuracy: number;
+}
+
+export interface ClosetItem {
+  id: string;
+  name: string;
+  unlock: number;
+}
+
+export interface ClosetSlot {
+  label: string;
+  color?: 'hair' | 'clothes';
+  items: ClosetItem[];
+}
+
+export interface CharacterCatalog {
+  slots: Record<string, ClosetSlot>;
+  colors: { hair: string[]; clothes: string[] };
+  levels: { min: number; name: string }[];
+  defaults: CharacterConfig;
 }
 
 export interface MyReview extends Review {

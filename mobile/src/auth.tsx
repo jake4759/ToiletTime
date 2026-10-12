@@ -5,6 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState, Platform } from 'react-native';
 
+import type { CharacterConfig } from './character/draw';
 import { api, setAuthToken } from './api';
 import { createSupabase, enabledProviders } from './supabase';
 import type { User } from './types';
@@ -38,7 +39,7 @@ interface AuthState {
   signOut: () => Promise<void>;
   deleteAccount: () => Promise<void>;
 
-  updateProfile: (fields: { username?: string; markerColor?: string | null }) => Promise<void>;
+  updateProfile: (fields: { username?: string; markerColor?: string | null; character?: CharacterConfig }) => Promise<void>;
   setAvatar: (imageBase64: string) => Promise<void>;
   removeAvatar: () => Promise<void>;
   refreshUser: () => Promise<void>;

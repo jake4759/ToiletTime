@@ -1,6 +1,9 @@
 import Constants from 'expo-constants';
 
+import type { CharacterConfig } from './character/draw';
 import type {
+  CharacterCatalog,
+  Here,
   MyReview,
   NewRestroom,
   Place,
@@ -9,6 +12,7 @@ import type {
   RestroomDetail,
   Review,
   ReviewDraft,
+  Rewards,
   User,
 } from './types';
 
@@ -30,7 +34,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    /** Why posting was refused: 'signin', 'unverified' or 'username'. */
+    /** Why posting was refused: 'signin', 'unverified', 'username' or 'not_visited'. */
     readonly code?: string,
   ) {
     super(message);
@@ -68,9 +72,16 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
 export const api = {
   list: () => request<{ bathrooms: Restroom[] }>('/api/bathrooms').then((d) => d.bathrooms),
   get: (id: string) => request<RestroomDetail>(`/api/bathrooms/${encodeURIComponent(id)}`),
-  create: (restroom: NewRestroom) => request<RestroomDetail>('/api/bathrooms', { body: restroom }),
-  review: (id: string, review: ReviewDraft) =>
-    request<Review>(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, { body: review }),
+  create: (restroom: NewRestroom, here: Here | null) =>
+    request<RestroomDetail & { rewards: Rewards }>('/api/bathrooms', { body: { ...restroom, here } }),
+  review: (id: string, review: ReviewDraft, here: Here | null) =>
+    request<Review & { rewards: Rewards }>(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, {
+      body: { ...review, here },
+    }),
+  /** Tells the server which restrooms you're near, so you can rate them later today. */
+  visits: (here: Here, restroomIds: string[], places: { osmId: string; lat: number; lng: number }[]) =>
+    request<{ recorded: number }>('/api/visits', { body: { ...here, restroomIds, places } }),
+  characterCatalog: () => request<CharacterCatalog>('/api/character'),
 
   places: (b: { south: number; west: number; north: number; east: number }) =>
     request<{ places: Place[]; zoomIn: boolean }>(
@@ -82,7 +93,7 @@ export const api = {
   reportReview: (id: string, reason: string) =>
     request<{ ok: true; hidden: boolean }>(`/api/reviews/${encodeURIComponent(id)}/report`, { body: { reason } }),
   me: () => request<{ user: User }>('/api/me').then((d) => d.user),
-  updateMe: (fields: { username?: string; markerColor?: string | null }) =>
+  updateMe: (fields: { username?: string; markerColor?: string | null; character?: CharacterConfig }) =>
     request<{ user: User }>('/api/me', { method: 'PATCH', body: fields }).then((d) => d.user),
   setAvatar: (imageBase64: string) =>
     request<{ user: User }>('/api/me/avatar', { method: 'PUT', body: { image: imageBase64 } }).then((d) => d.user),

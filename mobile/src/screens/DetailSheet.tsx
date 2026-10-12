@@ -21,6 +21,8 @@ import { Avatar, Button, Icon, Separator, SheetHeader, Stars, type SymbolName } 
 import { distanceMeters, formatDistance } from '../geo';
 import { formatRating, plural, useTheme } from '../theme';
 import { AccountSheet } from './AccountSheet';
+import { useRewards } from '../character/rewards';
+import { currentHere } from '../visits';
 import { chooseOption, chooseReportReason, useBlocked } from '../safety';
 import { PLACE_TYPES, emptyReview, type LatLng, type RestroomDetail, type Review } from '../types';
 
@@ -54,6 +56,7 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
   const { user, missing, expire } = useAuth();
   const { isBlocked, block } = useBlocked();
   const [accountOpen, setAccountOpen] = useState(false);
+  const { celebrate, closet } = useRewards();
   const writeAfterSignIn = useRef(false);
   const myReview = user ? detail?.reviews.find((r) => r.userId === user.id) : undefined;
 
@@ -97,17 +100,20 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
   const submit = async () => {
     setSubmitting(true);
     try {
-      await api.review(id, draft);
+      const posted = await api.review(id, draft, await currentHere());
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setWriting(false);
       setDraft(emptyReview());
       await load();
       onChanged();
+      celebrate(posted.rewards);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         await expire();
         setWriting(false);
         Alert.alert('Please sign in again', 'Your session has ended. Sign in to post your review.');
+      } else if (e instanceof ApiError && e.code === 'not_visited') {
+        Alert.alert('Were you here?', e.message);
       } else {
         Alert.alert("Couldn't post review", (e as Error).message);
       }
@@ -202,6 +208,10 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
               disabled={!isReviewComplete(draft)}
             />
           </View>
+          <Text style={[styles.small, { color: theme.muted, textAlign: 'center', marginTop: 10 }]}>
+            You can rate restrooms you’ve been to in the last 24 hours. Each review earns progress toward new
+            closet items for your character.
+          </Text>
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
@@ -285,6 +295,7 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
           writeAfterSignIn.current = false;
         }}
       />
+      {closet}
     </View>
   );
 }

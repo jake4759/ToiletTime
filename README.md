@@ -6,12 +6,14 @@ ToiletTime has a native app for iPhone and Android (`mobile/`, built with Expo a
 
 ## Features
 
-- **World map.** Every rated restroom appears as a pin colored by its average rating. Your own spot is your **map character**: your profile picture, or a little person in the color you pick.
+- **World map.** Every rated restroom appears as a pin colored by its average rating. Your own spot is your **Flush Buddy**, a little full-body character you dress up.
 - **Places already on the map.** Zoom in and nearby restaurants, cafés, stores, gas stations, hotels, and restrooms already mapped in OpenStreetMap (including those inside theme parks, malls and stations) appear with icons. Tap one to rate its restroom; there's nothing to set up first.
 - **Add a restroom.** Search for a business to fill in its details, or touch and hold the map to place one yourself.
+- **Flush Buddy and the Closet.** Pick skin, hair, hats, glasses, tops, bottoms, shoes and something to hold. Every restroom you review moves you up a level (Newbie, First Flush, Regular, Throne Scout, Porcelain Pro, Royal Flush) and unlocks new items, from a baseball cap after your first review to the Golden Plunger at 25. The app celebrates each unlock.
+- **Only rate where you've been.** You can add or rate a restroom if you're within about 200 m of it, or were in the last 24 hours while the app was open. The app quietly notes which restrooms you pass while it's open; only "near this restroom at this time" is saved (not your position) and it's deleted after 48 hours.
 - **Detailed ratings.** Overall, cleanliness, supplies and privacy, with an optional written review. Rating a place again updates your earlier review.
 - **Accounts.** Sign in with email and password, Apple, or Google. Email addresses are verified with a 6-digit code, and "Forgot password?" sends a code to reset it. Anyone can browse; posting needs a verified account and a username.
-- **Profile.** Username, profile picture, map character color, **My Reviews** (open or delete any of them), change password, sign out, and delete account.
+- **Profile.** Username, profile picture, your character and level, **My Reviews** (open or delete any of them), change password, sign out, and delete account.
 - **Search and filter** by name, city, country or place type; sort by distance, rating, review count or date.
 - Light and dark themes, and a layout that works on phones.
 
@@ -151,6 +153,9 @@ Settings come from environment variables or a `.env` file in this folder (`npm r
 | `PLACES_LIMIT` | `300` | Nearby-places lookups per client every 10 minutes |
 | `OVERPASS_URL` | public servers | OpenStreetMap Overpass endpoints for nearby places (comma-separated) |
 | `CONTACT_EMAIL` | none | Contact address shown in the Terms, Privacy Policy and the app's "Contact support" |
+| `VISIT_RADIUS_M` | `200` | How close (in meters, plus the phone's GPS accuracy up to 100 m) you must be to a restroom to count as being there |
+| `REVIEW_WINDOW_HOURS` | `24` | How long after being near a restroom you can still rate it. Visit records are kept for twice this, at least 48 hours; update the Privacy Policy if you change it. |
+| `VISIT_LIMIT` | `200` | Visit updates per client every 10 minutes |
 | `HIDE_AFTER_REPORTS` | `3` | Reports from different people that hide a review automatically |
 
 For the app, run `npm run lint` and `npm run typecheck` in `mobile/`.
@@ -166,12 +171,14 @@ Requests that need an account send the Supabase access token as `Authorization: 
 | `GET` | `/api/places?south=&west=&north=&east=` | Unrated businesses and mapped restrooms in an area (at most about 7 km across) |
 | `GET` | `/api/bathrooms?q=&type=&sort=` | Rated restrooms with average scores |
 | `GET` | `/api/bathrooms/:id` | A restroom and its reviews |
-| `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `osmId`, optional `review`). Needs a verified account with a username. |
-| `POST` | `/api/bathrooms/:id/reviews` | Add or update your review (`overall`, `cleanliness`, `supplies`, `privacy` from 1 to 5, optional `comment`) |
+| `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `osmId`, optional `review`, `here`). Needs a verified account with a username. Returns `rewards`. |
+| `POST` | `/api/bathrooms/:id/reviews` | Add or update your review (`overall`, `cleanliness`, `supplies`, `privacy` from 1 to 5, optional `comment`, `here`). Returns `rewards`. |
+| `POST` | `/api/visits` | Note which nearby restrooms you're at (`lat`, `lng`, `accuracy`, `restroomIds`, `places: [{osmId, lat, lng}]`) |
+| `GET` | `/api/character` | The Closet: every item, what unlocks it, colors and levels |
 | `DELETE` | `/api/reviews/:id` | Delete one of your reviews |
 | `POST` | `/api/reviews/:id/report` | Report a review (`reason`: `spam`, `offensive`, `false`, `private` or `other`) |
-| `GET` | `/api/me` | Your profile, email and verification status |
-| `PATCH` | `/api/me` | Change `username` or `markerColor` |
+| `GET` | `/api/me` | Your profile, character, level, review count, email and verification status |
+| `PATCH` | `/api/me` | Change `username`, `markerColor` or `character` (only unlocked items) |
 | `PUT` / `DELETE` | `/api/me/avatar` | Upload (`image`: base64 JPEG or PNG) or remove your profile picture |
 | `GET` | `/api/me/reviews` | Your reviews |
 | `DELETE` | `/api/me` | Delete your account; your reviews stay without your name |

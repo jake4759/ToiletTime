@@ -21,6 +21,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '../api';
 import { useAuth } from '../auth';
 import { Avatar, Button, Field, Icon, PasswordField, Section, Separator, SheetHeader, Stars } from '../components/ui';
+import { ClosetSheet, LevelProgress } from '../character/ClosetSheet';
+import { Character } from '../character/Character';
 import { useTheme } from '../theme';
 import { contactSupport, openLegal, useBlocked } from '../safety';
 import type { MyReview } from '../types';
@@ -724,6 +726,7 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
   const [username, setUsername] = useState(user.username ?? '');
   const [changingPassword, setChangingPassword] = useState(false);
   const [newPassword, setNewPassword] = useState('');
+  const [closetOpen, setClosetOpen] = useState(false);
   const { busy, error, setError, run } = useAction();
 
   const loadReviews = useCallback(() => {
@@ -858,27 +861,24 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
           )}
         </Section>
 
-        <Section
-          title="Your map character"
-          footer="This is how you appear on the map. With a profile picture, your photo is shown inside the ring."
-        >
-          <View style={styles.swatches}>
-            {CHARACTER_COLORS.map((c) => (
-              <Pressable
-                key={c}
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  run(() => auth.updateProfile({ markerColor: c }));
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`Character color ${c}`}
-                style={[styles.swatch, { backgroundColor: c, borderColor: c === color ? theme.text : 'transparent' }]}
-              >
-                {c === color && <Icon name="checkmark" size={14} color="#fff" />}
-              </Pressable>
-            ))}
-          </View>
+        <Section title="Your character" footer="This is you on the map. Rate restrooms you visit to unlock new hats, outfits and extras.">
+          <Pressable
+            onPress={() => setClosetOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Open your closet"
+            style={({ pressed }) => [styles.buddy, { opacity: pressed ? 0.7 : 1 }]}
+          >
+            <View style={[styles.buddyStage, { backgroundColor: theme.brandSoft }]}>
+              <Character character={user.character} height={96} />
+            </View>
+            <View style={styles.flex}>
+              <LevelProgress user={user} />
+            </View>
+          </Pressable>
+          <Separator />
+          <Row label="Open Closet" action="Customize" onPress={() => setClosetOpen(true)} />
         </Section>
+        <ClosetSheet visible={closetOpen} onClose={() => setClosetOpen(false)} />
 
         <Section title={`My reviews${reviews ? ` (${reviews.length})` : ''}`}>
           {reviews === null ? (
@@ -1110,8 +1110,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  swatches: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, padding: 16 },
-  swatch: { width: 34, height: 34, borderRadius: 17, borderWidth: 3, alignItems: 'center', justifyContent: 'center' },
+  buddy: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14 },
+  buddyStage: { borderRadius: 14, paddingHorizontal: 10, paddingTop: 6 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, minHeight: 46 },
   rowText: { fontSize: 17 },
   reviewRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 },

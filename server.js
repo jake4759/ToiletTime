@@ -184,7 +184,8 @@ async function me(store, user) {
 /** Rewards earned by a new review: level and any items it unlocked. */
 async function rewardsAfter(store, userId, before) {
   const p = await progress(store, userId);
-  return { ...p, newItems: character.newlyUnlocked(before, p.reviewCount) };
+  const levelUp = character.levelFor(before).name !== p.level.name;
+  return { ...p, levelUp, newItems: character.newlyUnlocked(before, p.reviewCount) };
 }
 
 // ---------- were you there? ----------
@@ -210,6 +211,11 @@ function position(v) {
 
 const isNear = (here, target) => !!here && distanceM(here, target) <= VISIT_RADIUS_M + here.accuracy;
 const hoursAgo = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
+
+// Visit records are only kept for VISIT_KEEP_HOURS; clear out old ones every hour even when nobody's posting.
+setInterval(() => {
+  storeReady.then((store) => store.recordVisits(null, [], hoursAgo(VISIT_KEEP_HOURS))).catch(() => {});
+}, 3600 * 1000).unref();
 
 /**
  * Checks that the person is at the restroom now (`here`) or was near it within the review window.

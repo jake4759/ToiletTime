@@ -306,6 +306,7 @@ test('character: starts with defaults, locked items refused, reviews unlock rewa
   const b = await addRestroom(eve.token);
   assert.strictEqual(b.rewards.reviewCount, 1);
   assert.strictEqual(b.rewards.level.name, 'First Flush');
+  assert.strictEqual(b.rewards.levelUp, true);
   assert.ok(b.rewards.newItems.some((i) => i.id === 'cap'));
 
   res = await request('PATCH', '/api/me', { character: { hat: 'cap', skin: 'skin4', topColor: '#dc2626' } }, eve.token);
@@ -317,6 +318,7 @@ test('character: starts with defaults, locked items refused, reviews unlock rewa
   const again = await (await post(`/api/bathrooms/${b.id}/reviews`, { here: HERE, ...stars }, eve.token)).json();
   assert.strictEqual(again.rewards.reviewCount, 1);
   assert.deepStrictEqual(again.rewards.newItems, []);
+  assert.strictEqual(again.rewards.levelUp, false);
 
   // Deleting the review takes the cap back off.
   const mine = (await (await request('GET', '/api/me/reviews', undefined, eve.token)).json()).reviews;
