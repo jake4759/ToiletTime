@@ -3,8 +3,15 @@
 // the secret key to delete an account when its owner asks.
 const crypto = require('node:crypto');
 
+/** Accepts the project URL with or without https://. */
+function projectUrl(value) {
+  const v = (value || '').trim().replace(/\/+$/, '');
+  if (!v) return '';
+  return /^https?:\/\//i.test(v) ? v : `https://${v}`;
+}
+
 const config = () => ({
-  url: (process.env.SUPABASE_URL || '').replace(/\/+$/, ''),
+  url: projectUrl(process.env.SUPABASE_URL),
   // Public key that apps use to talk to Supabase (the "anon" or "publishable" key).
   publicKey: process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '',
   // Secret key, only ever used on the server (the "service_role" or "secret" key).

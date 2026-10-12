@@ -19,6 +19,34 @@ function readEnv() {
   return env;
 }
 
+/** Accepts "https://abc.supabase.co", "abc.supabase.co" or just the project ID "abc". */
+function normalizeProjectUrl(value) {
+  let v = value.trim().replace(/\/+$/, '');
+  if (/^[a-z0-9]{15,30}$/i.test(v)) v = `${v}.supabase.co`;
+  if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
+  return v;
+}
+
+/**
+ * Fixes common copy-paste problems in a Postgres connection string: the [ ] around the password
+ * from Supabase's placeholder, and symbols like ? # @ / in the password, which must be encoded.
+ */
+function normalizeDatabaseUrl(value) {
+  const m = /^(postgres(?:ql)?:\/\/)([^:/@]+):(.*)@([^@]+)$/.exec(value.trim());
+  if (!m) return value.trim();
+  let [, scheme, user, password, rest] = m;
+  if (/^\[.*\]$/.test(password)) password = password.slice(1, -1);
+  if (/YOUR[-_]PASSWORD/i.test(password)) {
+    console.log('Note: the database string still says YOUR-PASSWORD. Put your real database password there.');
+  }
+  try {
+    password = decodeURIComponent(password); // in case it was already encoded
+  } catch {
+    // leave as typed
+  }
+  return `${scheme}${user}:${encodeURIComponent(password)}@${rest}`;
+}
+
 (async () => {
   // Queue typed (or pasted) lines so none are lost between questions.
   const rl = readline.createInterface({ input: process.stdin });
@@ -35,10 +63,15 @@ function readEnv() {
   const env = readEnv();
   const ask = async (question, key, { optional = false } = {}) => {
     const current = env[key];
-    const hint = current ? ` [press Enter to keep the current one]` : optional ? ' [optional, press Enter to skip]' : '';
+    const hint = current
+      ? ` [press Enter to keep the current one${optional ? ', or type none to remove it' : ''}]`
+      : optional
+        ? ' [optional, press Enter to skip]'
+        : '';
     process.stdout.write(`${question}${hint}\n> `);
     const answer = (await nextLine()).trim();
-    if (answer) env[key] = answer;
+    if (optional && /^none$/i.test(answer)) delete env[key];
+    else if (answer) env[key] = answer;
     console.log('');
   };
 
@@ -60,7 +93,8 @@ function readEnv() {
     console.log('The Project URL and publishable key are required. Nothing was saved.');
     process.exit(1);
   }
-  env.SUPABASE_URL = env.SUPABASE_URL.replace(/\/+$/, '');
+  env.SUPABASE_URL = normalizeProjectUrl(env.SUPABASE_URL);
+  if (env.DATABASE_URL) env.DATABASE_URL = normalizeDatabaseUrl(env.DATABASE_URL);
 
   process.stdout.write('Checking the connection... ');
   try {
@@ -72,6 +106,21 @@ function readEnv() {
   } catch (err) {
     console.log(`\nCouldn't reach Supabase: ${err.message}`);
     console.log('Saving anyway; you can run this again to fix it.');
+  }
+
+  if (env.DATABASE_URL) {
+    process.stdout.write('Checking the database... ');
+    try {
+      const { Client } = require('pg');
+      const db = new Client({ connectionString: env.DATABASE_URL, connectionTimeoutMillis: 10000 });
+      await db.connect();
+      await db.query('select 1');
+      await db.end();
+      console.log('connected.');
+    } catch (err) {
+      console.log(`\nCouldn't connect to the database: ${err.message}`);
+      console.log('Check the database password (Project Settings > Database), then run this again.');
+    }
   }
 
   const output = Object.entries(env).map(([k, v]) => `${k}=${v}`);

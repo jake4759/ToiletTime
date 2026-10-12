@@ -55,7 +55,13 @@ if (!supabase.isConfigured()) {
 
 const storeReady = createStore();
 storeReady.catch((err) => {
-  console.error('Failed to open storage:', err);
+  if (process.env.DATABASE_URL) {
+    console.error(`\nCouldn't connect to the database in DATABASE_URL: ${err.message}`);
+    console.error('Check the database password, or run "npm run configure" (ToiletTime.bat option 5) to fix it.');
+    console.error('To keep ratings on this computer instead, answer "none" to the database question.\n');
+  } else {
+    console.error('Failed to open storage:', err);
+  }
   process.exit(1);
 });
 
