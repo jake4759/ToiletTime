@@ -35,6 +35,24 @@ const stars = (r) =>
 let sb = null; // Supabase client, once the server says sign-in is set up
 let token = null; // current Supabase access token
 let currentUser = null; // { id, username, avatarUrl, email, emailVerified, ... } from /api/me
+let contactEmail = null;
+
+// People whose reviews this browser hides (kept only in this browser).
+const BLOCKED_KEY = 'toilettime.blocked';
+let blocked = [];
+try {
+  blocked = JSON.parse(localStorage.getItem(BLOCKED_KEY) || '[]');
+} catch {
+  blocked = [];
+}
+const isBlocked = (id) => !!id && blocked.some((b) => b.id === id);
+function saveBlocked() {
+  try {
+    localStorage.setItem(BLOCKED_KEY, JSON.stringify(blocked));
+  } catch {
+    // private browsing: the list lasts for this visit only
+  }
+}
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -380,7 +398,8 @@ async function openDetail(id, { pan = true } = {}) {
       </div>
     </form>
     <ul class="reviews">
-      ${b.reviews.map(renderReview).join('') || '<li class="no-reviews">No reviews yet.</li>'}
+      ${b.reviews.some((r) => isBlocked(r.userId)) ? '<li class="no-reviews">Some reviews are hidden because you chose to hide those people.</li>' : ''}
+      ${b.reviews.filter((r) => !isBlocked(r.userId)).map(renderReview).join('') || '<li class="no-reviews">No reviews yet.</li>'}
     </ul>`;
 
   $('#listView').hidden = true;
@@ -439,9 +458,55 @@ function renderReview(r) {
     </div>
     <div class="review-scores rating-line">${stars(r.overall)} · Cleanliness ${r.cleanliness} · Supplies ${r.supplies} · Privacy ${r.privacy}</div>
     ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}
-    ${mine ? `<div class="review-actions"><button type="button" class="btn-link delete-review" data-delete-review="${esc(r.id)}">Delete my review</button></div>` : ''}
+    ${mine
+      ? `<div class="review-actions"><button type="button" class="btn-link delete-review" data-delete-review="${esc(r.id)}">Delete my review</button></div>`
+      : `<div class="review-actions">
+          <button type="button" class="btn-link" data-report-review="${esc(r.id)}">Report</button>
+          ${r.userId ? `<button type="button" class="btn-link" data-block-user="${esc(r.userId)}" data-block-name="${esc(r.author)}">Hide this person's reviews</button>` : ''}
+        </div>`}
   </li>`;
 }
+
+let reportingReview = null;
+
+document.addEventListener('click', (e) => {
+  const report = e.target.closest('[data-report-review]');
+  if (report) {
+    reportingReview = report.dataset.reportReview;
+    requireSignedIn('Sign in to report a review.', () => {
+      $('#reportForm').reset();
+      $('#reportError').textContent = '';
+      $('#reportDialog').showModal();
+    });
+    return;
+  }
+  const blockBtn = e.target.closest('[data-block-user]');
+  if (blockBtn) {
+    if (!isBlocked(blockBtn.dataset.blockUser)) {
+      blocked.push({ id: blockBtn.dataset.blockUser, username: blockBtn.dataset.blockName });
+      saveBlocked();
+    }
+    toast(`You won't see reviews from ${blockBtn.dataset.blockName}. Undo this in your profile.`);
+    if (activeId) openDetail(activeId, { pan: false });
+  }
+});
+
+$('#reportForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const reason = new FormData(e.target).get('reason');
+  if (!reason) return ($('#reportError').textContent = 'Choose a reason.');
+  try {
+    const result = await api(`/api/reviews/${encodeURIComponent(reportingReview)}/report`, { method: 'POST', body: { reason } });
+    $('#reportDialog').close();
+    toast("Thanks for reporting. We'll take a look.");
+    if (result.hidden) {
+      await refresh();
+      if (activeId) openDetail(activeId, { pan: false });
+    }
+  } catch (err) {
+    $('#reportError').textContent = err.message;
+  }
+});
 
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-delete-review]');
@@ -679,6 +744,14 @@ function requireAccount(reason, action) {
   openAuth('signIn', { reason });
 }
 
+/** Like requireAccount, but only needs a sign-in (for reporting). */
+function requireSignedIn(reason, action) {
+  if (token) return action();
+  if (!sb) return toast('Sign-in is not set up on this server yet.');
+  afterSignIn = action;
+  openAuth('signIn', { reason });
+}
+
 function continueAfterSignIn() {
   const step = missingStep();
   if (step === 'verify') return openAuth('verify', { email: currentUser.email });
@@ -774,6 +847,7 @@ $('#authForm').addEventListener('submit', async (e) => {
       await signedIn();
     } else if (mode === 'signUp') {
       if (form.password.value.length < 8) throw new Error('Use at least 8 characters for your password.');
+      if (!form.agree.checked) throw new Error('Please confirm you are 13 or older and agree to the Terms and Privacy Policy.');
       const data = check(await sb.auth.signUp({ email, password: form.password.value }));
       authEmail = email;
       if (data.session) await signedIn();
@@ -874,7 +948,31 @@ function renderProfile() {
   $('#accountSince').textContent = `Member since ${new Date(currentUser.createdAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`;
   $('#renameForm').username.value = currentUser.username;
   $('#accountError').textContent = '';
+  renderBlocked();
 }
+
+function renderBlocked() {
+  $('#blockedSection').hidden = blocked.length === 0;
+  $('#blockedList').innerHTML = blocked
+    .map((b) => `<li><div class="mr-main"><div class="mr-name">${esc(b.username)}</div></div>
+      <button type="button" class="btn-link" data-unblock="${esc(b.id)}">Show again</button></li>`)
+    .join('');
+}
+
+$('#blockedList').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-unblock]');
+  if (!btn) return;
+  blocked = blocked.filter((b) => b.id !== btn.dataset.unblock);
+  saveBlocked();
+  renderBlocked();
+  if (activeId) openDetail(activeId, { pan: false });
+});
+
+$('#contactLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  if (contactEmail) location.href = `mailto:${contactEmail}?subject=${encodeURIComponent('ToiletTime support')}`;
+  else toast('A support email has not been set up yet.');
+});
 
 async function loadMyReviews() {
   const list = $('#myReviews');
@@ -889,6 +987,7 @@ async function loadMyReviews() {
             <div class="mr-main" data-open-restroom="${esc(r.restroomId)}">
               <div class="mr-name">${esc(r.restroomName)}</div>
               <div class="mr-meta">${stars(r.overall)} ${new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+              ${r.hidden ? '<div class="hidden-badge">Hidden after reports. Edit it to post it again, or contact support.</div>' : ''}
             </div>
             <button type="button" class="icon-btn delete-review" data-delete-review="${esc(r.id)}" aria-label="Delete review of ${esc(r.restroomName)}">${icon('trash')}</button>
           </li>`,
@@ -1010,7 +1109,9 @@ async function startAuth() {
   renderAccountButton();
   let config = null;
   try {
-    config = (await api('/api/config')).auth;
+    const settings = await api('/api/config');
+    config = settings.auth;
+    contactEmail = settings.contactEmail;
   } catch {
     // Browsing still works without accounts.
   }

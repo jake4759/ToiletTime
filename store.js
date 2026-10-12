@@ -47,8 +47,9 @@ function publicProfile(p) {
 }
 
 function summarize(b) {
-  const n = b.reviews.length;
-  const avg = (key) => (n ? round1(b.reviews.reduce((s, r) => s + r[key], 0) / n) : null);
+  const visible = b.reviews.filter((r) => !r.hidden);
+  const n = visible.length;
+  const avg = (key) => (n ? round1(visible.reduce((s, r) => s + r[key], 0) / n) : null);
   const { reviews, ...fields } = b;
   return {
     ...fields,
@@ -119,6 +120,7 @@ class JsonStore {
       supplies: r.supplies,
       privacy: r.privacy,
       comment: r.comment,
+      hidden: !!r.hidden,
       createdAt: r.createdAt,
     };
   }
@@ -129,7 +131,51 @@ class JsonStore {
 
   async get(id) {
     const b = this.bathrooms.find((x) => x.id === id);
-    return b ? { ...summarize(b), reviews: b.reviews.map((r) => this.publicReview(r)).sort(newestFirst) } : null;
+    if (!b) return null;
+    const reviews = b.reviews.filter((r) => !r.hidden).map((r) => this.publicReview(r));
+    return { ...summarize(b), reviews: reviews.sort(newestFirst) };
+  }
+
+  findReview(reviewId) {
+    for (const b of this.bathrooms) {
+      const r = b.reviews.find((x) => x.id === reviewId);
+      if (r) return { b, r };
+    }
+    return null;
+  }
+
+  /** Records a report (one per person per review) and hides the review once enough people report it. */
+  async reportReview(reviewId, reporterId, reason, hideAfter) {
+    const found = this.findReview(reviewId);
+    if (!found) return null;
+    const { r } = found;
+    if (r.userId === reporterId) return { own: true };
+    r.reports = (r.reports || []).filter((x) => x.reporterId !== reporterId);
+    r.reports.push({ reporterId, reason, createdAt: new Date().toISOString() });
+    if (r.reports.length >= hideAfter) r.hidden = true;
+    this.save();
+    return { hidden: !!r.hidden };
+  }
+
+  /** Reported reviews with their reports, most reported first (for moderators). */
+  async listReported() {
+    const out = [];
+    for (const b of this.bathrooms) {
+      for (const r of b.reviews) {
+        if (r.reports?.length) out.push({ ...this.publicReview(r), restroomName: b.name, reports: r.reports });
+      }
+    }
+    return out.sort((a, b) => b.reports.length - a.reports.length);
+  }
+
+  /** Moderator action: 'delete' removes the review, 'restore' shows it again and clears its reports. */
+  async moderate(reviewId, action) {
+    const found = this.findReview(reviewId);
+    if (!found) return false;
+    if (action === 'delete') found.b.reviews = found.b.reviews.filter((x) => x.id !== reviewId);
+    else Object.assign(found.r, { hidden: false, reports: [] });
+    this.save();
+    return true;
   }
 
   async findIdByOsmId(osmId) {
@@ -148,6 +194,7 @@ class JsonStore {
     const b = this.bathrooms.find((x) => x.id === restroomId);
     if (!b) return null;
     const existing = review.userId ? b.reviews.findIndex((r) => r.userId === review.userId) : -1;
+    // Editing a review starts it fresh: earlier reports no longer apply to the new text.
     if (existing >= 0) b.reviews[existing] = { ...review, id: b.reviews[existing].id };
     else b.reviews.push(review);
     this.save();
@@ -271,6 +318,14 @@ const SCHEMA = `
     created_at timestamptz NOT NULL DEFAULT now()
   );
   ALTER TABLE reviews ADD COLUMN IF NOT EXISTS user_id uuid;
+  ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false;
+  CREATE TABLE IF NOT EXISTS review_reports (
+    review_id uuid NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    reporter_id uuid NOT NULL,
+    reason text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (review_id, reporter_id)
+  );
   CREATE INDEX IF NOT EXISTS reviews_restroom_id_idx ON reviews (restroom_id);
   CREATE INDEX IF NOT EXISTS reviews_user_id_idx ON reviews (user_id);
   CREATE UNIQUE INDEX IF NOT EXISTS reviews_one_per_user_idx ON reviews (restroom_id, user_id);
@@ -293,7 +348,7 @@ const SUMMARY_SQL = `
   SELECT r.*, count(v.id)::int AS review_count,
          avg(v.overall) AS rating, avg(v.cleanliness) AS avg_cleanliness,
          avg(v.supplies) AS avg_supplies, avg(v.privacy) AS avg_privacy
-  FROM restrooms r LEFT JOIN reviews v ON v.restroom_id = r.id
+  FROM restrooms r LEFT JOIN reviews v ON v.restroom_id = r.id AND NOT v.hidden
 `;
 
 const REVIEW_SQL = `
@@ -334,6 +389,7 @@ const toReview = (row) => ({
   supplies: row.supplies,
   privacy: row.privacy,
   comment: row.comment,
+  hidden: !!row.hidden,
   createdAt: iso(row.created_at),
 });
 
@@ -388,10 +444,11 @@ class PgStore {
        ON CONFLICT (restroom_id, user_id) DO UPDATE SET
          author = EXCLUDED.author, overall = EXCLUDED.overall, cleanliness = EXCLUDED.cleanliness,
          supplies = EXCLUDED.supplies, privacy = EXCLUDED.privacy, comment = EXCLUDED.comment,
-         created_at = EXCLUDED.created_at
+         created_at = EXCLUDED.created_at, hidden = false
        RETURNING id`,
       [v.id, restroomId, v.userId ?? null, v.author, v.overall, v.cleanliness, v.supplies, v.privacy, v.comment, v.createdAt],
     );
+    await db.query('DELETE FROM review_reports WHERE review_id = $1', [rows[0].id]);
     const full = await db.query(`${REVIEW_SQL} WHERE v.id = $1`, [rows[0].id]);
     return toReview(full.rows[0]);
   }
@@ -405,7 +462,10 @@ class PgStore {
     if (!isUuid(id)) return null;
     const { rows } = await this.pool.query(`${SUMMARY_SQL} WHERE r.id = $1 GROUP BY r.id`, [id]);
     if (!rows.length) return null;
-    const reviews = await this.pool.query(`${REVIEW_SQL} WHERE v.restroom_id = $1 ORDER BY v.created_at DESC`, [id]);
+    const reviews = await this.pool.query(
+      `${REVIEW_SQL} WHERE v.restroom_id = $1 AND NOT v.hidden ORDER BY v.created_at DESC`,
+      [id],
+    );
     return { ...toSummary(rows[0]), reviews: reviews.rows.map(toReview) };
   }
 
@@ -437,6 +497,47 @@ class PgStore {
       [userId],
     );
     return rows.map((row) => ({ ...toReview(row), restroomId: row.restroom_id, restroomName: row.restroom_name }));
+  }
+
+  async reportReview(reviewId, reporterId, reason, hideAfter) {
+    if (!isUuid(reviewId)) return null;
+    const { rows } = await this.pool.query('SELECT user_id FROM reviews WHERE id = $1', [reviewId]);
+    if (!rows.length) return null;
+    if (rows[0].user_id === reporterId) return { own: true };
+    await this.pool.query(
+      `INSERT INTO review_reports (review_id, reporter_id, reason) VALUES ($1, $2, $3)
+       ON CONFLICT (review_id, reporter_id) DO UPDATE SET reason = EXCLUDED.reason, created_at = now()`,
+      [reviewId, reporterId, reason],
+    );
+    const result = await this.pool.query(
+      `UPDATE reviews SET hidden = true WHERE id = $1
+         AND (SELECT count(*) FROM review_reports WHERE review_id = $1) >= $2
+       RETURNING id`,
+      [reviewId, hideAfter],
+    );
+    const hidden = result.rowCount > 0 || (await this.pool.query('SELECT hidden FROM reviews WHERE id = $1', [reviewId])).rows[0].hidden;
+    return { hidden };
+  }
+
+  async listReported() {
+    const { rows } = await this.pool.query(
+      `SELECT v.*, p.username AS profile_username, p.avatar_updated_at AS profile_avatar_at, r.name AS restroom_name,
+              json_agg(json_build_object('reporterId', x.reporter_id, 'reason', x.reason, 'createdAt', x.created_at)) AS reports
+       FROM review_reports x JOIN reviews v ON v.id = x.review_id JOIN restrooms r ON r.id = v.restroom_id
+       LEFT JOIN profiles p ON p.id = v.user_id
+       GROUP BY v.id, p.username, p.avatar_updated_at, r.name
+       ORDER BY count(*) DESC`,
+    );
+    return rows.map((row) => ({ ...toReview(row), restroomName: row.restroom_name, reports: row.reports }));
+  }
+
+  async moderate(reviewId, action) {
+    if (!isUuid(reviewId)) return false;
+    if (action === 'delete') {
+      return (await this.pool.query('DELETE FROM reviews WHERE id = $1', [reviewId])).rowCount > 0;
+    }
+    await this.pool.query('DELETE FROM review_reports WHERE review_id = $1', [reviewId]);
+    return (await this.pool.query('UPDATE reviews SET hidden = false WHERE id = $1', [reviewId])).rowCount > 0;
   }
 
   async deleteReview(reviewId, userId) {

@@ -77,7 +77,10 @@ export const api = {
       `/api/places?south=${b.south}&west=${b.west}&north=${b.north}&east=${b.east}`,
     ),
 
-  config: () => request<{ auth: { supabaseUrl: string; supabaseKey: string } | null }>('/api/config'),
+  config: () =>
+    request<{ auth: { supabaseUrl: string; supabaseKey: string } | null; contactEmail: string | null }>('/api/config'),
+  reportReview: (id: string, reason: string) =>
+    request<{ ok: true; hidden: boolean }>(`/api/reviews/${encodeURIComponent(id)}/report`, { body: { reason } }),
   me: () => request<{ user: User }>('/api/me').then((d) => d.user),
   updateMe: (fields: { username?: string; markerColor?: string | null }) =>
     request<{ user: User }>('/api/me', { method: 'PATCH', body: fields }).then((d) => d.user),

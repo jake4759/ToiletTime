@@ -22,6 +22,7 @@ echo   6  Sign in to Expo
 echo   7  Open the website on this PC
 echo   8  Show the commands, to type them myself
 echo   9  Put a ToiletTime shortcut on my Desktop
+echo   10 See reported reviews             (moderation)
 echo   0  Exit
 echo.
 set "choice="
@@ -35,6 +36,7 @@ if "%choice%"=="6" goto expologin
 if "%choice%"=="7" goto website
 if "%choice%"=="8" goto commands
 if "%choice%"=="9" goto shortcut
+if "%choice%"=="10" goto moderate
 if "%choice%"=="0" goto end
 goto menu
 
@@ -100,6 +102,17 @@ call npm run configure
 pause
 goto menu
 
+:moderate
+cls
+call npm run moderate
+echo.
+echo   To delete a review, copy its ID and run:   npm run moderate -- delete ID
+echo   To keep it and clear its reports:          npm run moderate -- restore ID
+echo   (Option 8 explains how to open a command window here.)
+echo.
+pause
+goto menu
+
 :expologin
 cls
 echo.
@@ -134,6 +147,7 @@ echo   npm run phone          Start the app for your iPhone on the same Wi-Fi
 echo   npm run phone:online   Start the app using the online server, any network
 echo   npm run update         Download and install the newest version
 echo   npm run configure      Connect accounts by saving your Supabase keys
+echo   npm run moderate       See reported reviews (add: -- delete ID, or -- restore ID)
 echo   npm start              Start only the website, at http://localhost:3000
 echo   npm test               Run the server's automatic checks
 echo.

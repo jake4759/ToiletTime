@@ -38,6 +38,8 @@ export interface Review {
   userId: string | null;
   author: string;
   authorAvatarUrl?: string | null;
+  /** Hidden after several people reported it (only shown to its author). */
+  hidden?: boolean;
   overall: number;
   cleanliness: number;
   supplies: number;

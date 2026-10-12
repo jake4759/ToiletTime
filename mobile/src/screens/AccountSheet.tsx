@@ -22,6 +22,7 @@ import { api } from '../api';
 import { useAuth } from '../auth';
 import { Avatar, Button, Field, Icon, PasswordField, Section, Separator, SheetHeader, Stars } from '../components/ui';
 import { useTheme } from '../theme';
+import { contactSupport, openLegal, useBlocked } from '../safety';
 import type { MyReview } from '../types';
 
 /** Colors people can pick for their character on the map. */
@@ -190,6 +191,49 @@ function NotSetUp({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ---------- legal ----------
+
+/** "Terms of Service" and "Privacy Policy" as tappable words inside a sentence. */
+function LegalLinks() {
+  const theme = useTheme();
+  const link = { color: theme.brand, fontWeight: '600' as const };
+  return (
+    <>
+      <Text style={link} onPress={() => openLegal('terms')} accessibilityRole="link">
+        Terms of Service
+      </Text>
+      {' and '}
+      <Text style={link} onPress={() => openLegal('privacy')} accessibilityRole="link">
+        Privacy Policy
+      </Text>
+    </>
+  );
+}
+
+function AgreeCheckbox({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  const theme = useTheme();
+  return (
+    <Pressable
+      onPress={() => onChange(!checked)}
+      style={styles.agree}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+    >
+      <View
+        style={[
+          styles.checkbox,
+          { borderColor: checked ? theme.brand : theme.muted, backgroundColor: checked ? theme.brand : 'transparent' },
+        ]}
+      >
+        {checked && <Icon name="checkmark" size={13} color={theme.onBrand} />}
+      </View>
+      <Text style={[styles.agreeText, { color: theme.textSecondary }]}>
+        I&apos;m 13 or older and agree to the <LegalLinks />.
+      </Text>
+    </Pressable>
+  );
+}
+
 // ---------- signing in ----------
 
 type Step = 'signIn' | 'signUp' | 'verify' | 'forgot' | 'reset';
@@ -248,6 +292,9 @@ function SocialButtons({ run, busy }: { run: (a: () => Promise<unknown>) => Prom
           <Text style={[styles.googleText, { color: theme.text }]}>Continue with Google</Text>
         </Pressable>
       )}
+      <Text style={[styles.legalNote, { color: theme.muted }]}>
+        By continuing, you confirm you&apos;re 13 or older and agree to the <LegalLinks />.
+      </Text>
       <View style={styles.dividerRow}>
         <View style={[styles.dividerLine, { backgroundColor: theme.separator }]} />
         <Text style={[styles.dividerText, { color: theme.muted }]}>or use email</Text>
@@ -335,11 +382,13 @@ function SignUp({
   const { signUp } = useAuth();
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
+  const [agreed, setAgreed] = useState(false);
   const { busy, error, run } = useAction();
   const passwordRef = useRef<TextInput>(null);
 
   const submit = () =>
     run(async () => {
+      if (!agreed) throw new Error('Please confirm you are 13 or older and agree to the Terms and Privacy Policy.');
       if ((await signUp(email.trim(), password)) === 'verify') go('verify', email.trim());
     });
 
@@ -375,12 +424,13 @@ function SignUp({
         />
       </Section>
       <View style={styles.actions}>
+        <AgreeCheckbox checked={agreed} onChange={setAgreed} />
         <ErrorText error={error} />
         <Button
           title="Create Account"
           onPress={submit}
           loading={busy}
-          disabled={!email.trim() || password.length < 8}
+          disabled={!email.trim() || password.length < 8 || !agreed}
         />
         <Text style={[styles.switchText, { color: theme.textSecondary }]}>Already have an account?</Text>
         <LinkButton label="Sign in" onPress={() => go('signIn', email.trim())} />
@@ -667,6 +717,7 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const auth = useAuth();
+  const { blocked, unblock } = useBlocked();
   const user = auth.user!;
   const [reviews, setReviews] = useState<MyReview[] | null>(null);
   const [editingName, setEditingName] = useState(false);
@@ -867,6 +918,11 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
                         {r.comment}
                       </Text>
                     )}
+                    {r.hidden && (
+                      <Text style={[styles.small, { color: theme.danger, marginTop: 2 }]}>
+                        Hidden after reports. Edit it to post it again, or contact support.
+                      </Text>
+                    )}
                   </Pressable>
                   <Pressable
                     onPress={() => deleteReview(r)}
@@ -880,6 +936,25 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
               </View>
             ))
           )}
+        </Section>
+
+        {blocked.length > 0 && (
+          <Section title="Hidden people" footer="You don't see reviews from these people. Only you can see this list.">
+            {blocked.map((b, i) => (
+              <View key={b.id}>
+                {i > 0 && <Separator />}
+                <Row label={b.username} action="Show again" onPress={() => unblock(b.id)} />
+              </View>
+            ))}
+          </Section>
+        )}
+
+        <Section title="About & help">
+          <Row label="Terms of Service" onPress={() => openLegal('terms')} chevron />
+          <Separator />
+          <Row label="Privacy Policy" onPress={() => openLegal('privacy')} chevron />
+          <Separator />
+          <Row label="Contact support" onPress={() => contactSupport(auth.contactEmail)} chevron />
         </Section>
 
         <Section title="Account">
@@ -985,6 +1060,18 @@ const styles = StyleSheet.create({
   },
   googleG: { fontSize: 19, fontWeight: '800', color: '#4285F4' },
   googleText: { fontSize: 17, fontWeight: '600' },
+  legalNote: { fontSize: 12, lineHeight: 17, textAlign: 'center', marginTop: 2 },
+  agree: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingHorizontal: 4 },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  agreeText: { flex: 1, fontSize: 14, lineHeight: 20 },
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
   dividerLine: { flex: 1, height: StyleSheet.hairlineWidth },
   dividerText: { fontSize: 13 },

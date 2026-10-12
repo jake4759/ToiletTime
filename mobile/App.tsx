@@ -8,6 +8,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 
 import { API_URL, IS_HOSTED_API, api } from './src/api';
 import { AuthProvider, useAuth } from './src/auth';
+import { BlockedProvider } from './src/safety';
 import { Avatar, Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
 import { distanceMeters, formatDistance } from './src/geo';
 import { AccountSheet, CHARACTER_COLORS } from './src/screens/AccountSheet';
@@ -37,7 +38,9 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <MapScreen />
+        <BlockedProvider>
+          <MapScreen />
+        </BlockedProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );
@@ -504,6 +507,7 @@ function PlaceCard({ place, origin, onRate }: { place: Place; origin: LatLng | n
         <Text style={[styles.previewSub, { color: theme.textSecondary }]} numberOfLines={1}>
           {facts ? `Not rated yet · ${facts}` : 'Not rated yet'}
         </Text>
+        <Text style={[styles.credit, { color: theme.muted }]}>Place data © OpenStreetMap contributors</Text>
       </View>
       <Button title="Rate" icon="star.fill" onPress={onRate} style={styles.rateButton} />
     </View>
@@ -646,5 +650,6 @@ const styles = StyleSheet.create({
   },
   placePinSelected: { width: 36, height: 36, borderRadius: 18, borderWidth: 2 },
   placeIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  credit: { fontSize: 10, marginTop: 3 },
   rateButton: { height: 40, paddingHorizontal: 14, borderRadius: 12 },
 });

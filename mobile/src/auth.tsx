@@ -20,6 +20,8 @@ interface AuthState {
   /** False when the server has no Supabase project connected (browsing still works). */
   enabled: boolean;
   providers: { apple: boolean; google: boolean };
+  /** Where people can write for support, reports and privacy requests (from the server's settings). */
+  contactEmail: string | null;
   user: User | null;
   /** The next step before this person can post, or null if they can. */
   missing: Missing;
@@ -75,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [client, setClient] = useState<SupabaseClient | null>(null);
   const [providers, setProviders] = useState({ apple: false, google: false });
+  const [contactEmail, setContactEmail] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const clientRef = useRef<SupabaseClient | null>(null);
@@ -94,7 +97,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       let config = null;
       for (let attempt = 0; attempt < 3 && !config; attempt++) {
         try {
-          config = (await api.config()).auth;
+          const settings = await api.config();
+          setContactEmail(settings.contactEmail);
+          config = settings.auth;
           break;
         } catch {
           await new Promise((r) => setTimeout(r, 1500));
@@ -162,6 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ready,
       enabled: !!client,
       providers,
+      contactEmail,
       user: session ? user : null,
       missing,
 
@@ -234,7 +240,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
       },
     };
-  }, [ready, client, providers, session, user, refreshUser]);
+  }, [ready, client, providers, contactEmail, session, user, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

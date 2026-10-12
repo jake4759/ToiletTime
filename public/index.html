@@ -73,6 +73,7 @@
           </button>
         </div>
         <ul id="list" class="list"></ul>
+        <footer class="side-foot"><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · Place data © OpenStreetMap contributors</footer>
       </section>
 
       <!-- Detail view -->
@@ -151,6 +152,7 @@
         <p id="authReason" class="help"></p>
         <div class="only-start" id="socialBlock" hidden>
           <button type="button" class="btn btn-block google-btn" id="googleBtn"><span class="g">G</span>Continue with Google</button>
+          <p class="legal-note">By continuing, you confirm you're 13 or older and agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</p>
           <div class="divider"><span>or use email</span></div>
         </div>
         <label class="field only-email">Email
@@ -172,6 +174,10 @@
             <button type="button" class="eye" data-toggle-password aria-label="Show password"><svg class="icon"><use href="#i-eye"/></svg></button>
           </span>
         </label>
+        <label class="check agree only-signup">
+          <input type="checkbox" name="agree">
+          <span>I'm 13 or older and agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</span>
+        </label>
         <p id="authError" class="error" role="alert"></p>
         <p id="authNote" class="help"></p>
         <button type="submit" class="btn btn-primary btn-block" id="authSubmit">Sign in</button>
@@ -179,6 +185,28 @@
         <button type="button" class="btn-link only-verify" id="linkSignIn">Confirmed with the email link? Sign in</button>
         <p class="auth-switch"><span id="authSwitchText">New to ToiletTime?</span>
           <button type="button" class="btn-link" id="authSwitch">Create an account</button></p>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Report a review -->
+  <dialog id="reportDialog" class="modal modal-sm">
+    <form id="reportForm" class="modal-inner" novalidate>
+      <header class="modal-head">
+        <h2>Report review</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+      </header>
+      <div class="modal-body auth-body">
+        <p class="help">Why are you reporting this review? Reviews reported by several people are hidden automatically.</p>
+        <div class="checks">
+          <label class="check"><input type="radio" name="reason" value="spam"><span>Spam or advertising</span></label>
+          <label class="check"><input type="radio" name="reason" value="offensive"><span>Offensive or hateful</span></label>
+          <label class="check"><input type="radio" name="reason" value="false"><span>False or misleading</span></label>
+          <label class="check"><input type="radio" name="reason" value="private"><span>Shares someone's private information</span></label>
+          <label class="check"><input type="radio" name="reason" value="other"><span>Something else</span></label>
+        </div>
+        <p id="reportError" class="error" role="alert"></p>
+        <button type="submit" class="btn btn-primary btn-block">Send report</button>
       </div>
     </form>
   </dialog>
@@ -243,6 +271,16 @@
             </span>
             <button type="submit" class="btn">Change</button>
           </form>
+        </section>
+
+        <section class="account-section" id="blockedSection" hidden>
+          <h3>Hidden people</h3>
+          <ul id="blockedList" class="my-reviews"></ul>
+        </section>
+
+        <section class="account-section">
+          <h3>About &amp; help</h3>
+          <p class="about-links"><a href="/terms" target="_blank" rel="noopener">Terms of Service</a> · <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a> · <a href="#" id="contactLink">Contact support</a></p>
         </section>
 
         <p id="accountError" class="error" role="alert"></p>

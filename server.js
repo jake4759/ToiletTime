@@ -4,11 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-loadEnvFile(path.join(__dirname, '.env'));
+require('./env').loadEnvFile(path.join(__dirname, '.env'));
 
 const { fetchPlaces, parseBbox } = require('./places');
 const { createStore, isUuid } = require('./store');
 const supabase = require('./supabase');
+const { HIDE_AFTER_REPORTS, REPORT_REASONS, isOffensiveName, maskText } = require('./moderation');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -28,26 +29,13 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-/** Reads KEY=value lines from a .env file into process.env (without overriding real env vars). */
-function loadEnvFile(file) {
-  let text;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch {
-    return;
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (!m || line.trim().startsWith('#')) continue;
-    const value = m[2].replace(/^(['"])(.*)\1$/, '$2');
-    if (process.env[m[1]] === undefined) process.env[m[1]] = value;
-  }
-}
-
 // ---------- storage & limits ----------
 
 if (process.env.RENDER && !process.env.DATABASE_URL) {
   console.warn('DATABASE_URL is not set: ratings are kept in a local file and will be lost when the server restarts.');
+}
+if (!process.env.CONTACT_EMAIL) {
+  console.warn('CONTACT_EMAIL is not set: the Terms and Privacy Policy have no contact address. Run "npm run configure" to add one.');
 }
 if (!supabase.isConfigured()) {
   console.warn('Supabase is not set up yet, so sign-in is turned off. Run "npm run configure" to connect it.');
@@ -145,6 +133,7 @@ function username(v) {
     throw new ValidationError('Usernames are 3–20 letters, numbers, underscores or dots.');
   }
   if (RESERVED.has(u.toLowerCase().replace(/[_.]/g, ''))) throw new ValidationError('That username is reserved.');
+  if (isOffensiveName(u)) throw new ValidationError("That username isn't allowed. Please choose another.");
   return u;
 }
 
@@ -261,7 +250,7 @@ function validateReview(body, profile) {
     cleanliness: stars(body.cleanliness, 'cleanliness'),
     supplies: stars(body.supplies, 'supplies'),
     privacy: stars(body.privacy, 'privacy'),
-    comment: str(body.comment, 1000),
+    comment: maskText(str(body.comment, 1000)),
     createdAt: new Date().toISOString(),
   };
 }
@@ -366,7 +355,9 @@ async function handleApi(req, res, url) {
   if (parts[1] === 'health') return send(res, 200, { ok: true });
 
   // GET /api/config  (public settings the apps need to sign in with Supabase)
-  if (parts[1] === 'config' && req.method === 'GET') return send(res, 200, { auth: supabase.publicConfig() });
+  if (parts[1] === 'config' && req.method === 'GET') {
+    return send(res, 200, { auth: supabase.publicConfig(), contactEmail: process.env.CONTACT_EMAIL || null });
+  }
 
   if (parts[1] === 'me') return handleMe(req, res, store, parts);
 
@@ -381,6 +372,18 @@ async function handleApi(req, res, url) {
       'Content-Security-Policy': "default-src 'none'",
     });
     return res.end(avatar.data);
+  }
+
+  // POST /api/reviews/:id/report  { reason }
+  if (parts[1] === 'reviews' && parts.length === 4 && parts[3] === 'report' && req.method === 'POST') {
+    const user = await requireUser(req);
+    if (!allowWrite(req)) return send(res, 429, { error: 'Too many reports. Please try again in a few minutes.' });
+    const { reason } = await readJson(req);
+    if (!Object.hasOwn(REPORT_REASONS, reason)) throw new ValidationError('Choose a reason for the report.');
+    const result = await store.reportReview(parts[2], user.id, reason, HIDE_AFTER_REPORTS);
+    if (!result) return send(res, 404, { error: 'review not found' });
+    if (result.own) return send(res, 400, { error: "You can't report your own review. You can delete it instead." });
+    return send(res, 200, { ok: true, hidden: result.hidden });
   }
 
   // DELETE /api/reviews/:id  (your own review)
@@ -467,6 +470,19 @@ async function handleApi(req, res, url) {
 
 // ---------- static files ----------
 
+const LEGAL_PAGES = new Set(['terms.html', 'privacy.html']);
+const escapeHtml = (v) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+/** Puts the contact email (CONTACT_EMAIL) into the Terms and Privacy Policy. */
+function fillLegalPage(html) {
+  const email = (process.env.CONTACT_EMAIL || '').trim();
+  if (/^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(email)) return html.replaceAll('{{CONTACT_EMAIL}}', escapeHtml(email));
+  // No contact email set yet: show plain text instead of a broken link.
+  return html
+    .replace(/<a href="mailto:\{\{CONTACT_EMAIL\}\}">\{\{CONTACT_EMAIL\}\}<\/a>/g, 'the contact email shown in the app')
+    .replaceAll('{{CONTACT_EMAIL}}', '');
+}
+
 function serveStatic(req, res, url) {
   let rel;
   try {
@@ -476,6 +492,7 @@ function serveStatic(req, res, url) {
     return;
   }
   if (rel === '/') rel = '/index.html';
+  if (rel === '/terms' || rel === '/privacy') rel += '.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) {
     res.writeHead(403).end('Forbidden');
@@ -490,7 +507,7 @@ function serveStatic(req, res, url) {
       'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': file.includes(`${path.sep}vendor${path.sep}`) ? 'public, max-age=604800' : 'no-cache',
     });
-    res.end(data);
+    res.end(LEGAL_PAGES.has(path.basename(file)) ? fillLegalPage(data.toString('utf8')) : data);
   });
 }
 

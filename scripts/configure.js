@@ -87,6 +87,10 @@ function normalizeDatabaseUrl(value) {
     'DATABASE_URL',
     { optional: true },
   );
+  await ask(
+    '5. Contact email for your Terms of Service and Privacy Policy (where people send questions, reports and privacy requests):',
+    'CONTACT_EMAIL',
+  );
   rl.close();
 
   if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {

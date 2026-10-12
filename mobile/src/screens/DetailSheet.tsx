@@ -21,6 +21,7 @@ import { Avatar, Button, Icon, Separator, SheetHeader, Stars, type SymbolName } 
 import { distanceMeters, formatDistance } from '../geo';
 import { formatRating, plural, useTheme } from '../theme';
 import { AccountSheet } from './AccountSheet';
+import { chooseOption, chooseReportReason, useBlocked } from '../safety';
 import { PLACE_TYPES, emptyReview, type LatLng, type RestroomDetail, type Review } from '../types';
 
 interface Props {
@@ -51,6 +52,7 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
   const [draft, setDraft] = useState(emptyReview);
   const [submitting, setSubmitting] = useState(false);
   const { user, missing, expire } = useAuth();
+  const { isBlocked, block } = useBlocked();
   const [accountOpen, setAccountOpen] = useState(false);
   const writeAfterSignIn = useRef(false);
   const myReview = user ? detail?.reviews.find((r) => r.userId === user.id) : undefined;
@@ -111,6 +113,40 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
       }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const reviewActions = async (r: Review) => {
+    const options = ['Report review', ...(r.userId ? [`Hide reviews from ${r.author}`] : [])];
+    const choice = await chooseOption(`Review by ${r.author}`, options, 0);
+    if (choice === 1 && r.userId) {
+      block({ id: r.userId, username: r.author });
+      Alert.alert('Hidden', `You won't see reviews from ${r.author} anymore. You can undo this in your profile.`);
+      return;
+    }
+    if (choice !== 0) return;
+    if (!user) {
+      Alert.alert('Sign in to report', 'Reports come from signed-in accounts so they can be trusted.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign In', onPress: () => setAccountOpen(true) },
+      ]);
+      return;
+    }
+    const reason = await chooseReportReason();
+    if (!reason) return;
+    try {
+      const result = await api.reportReview(r.id, reason);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        'Thanks for reporting',
+        "We'll take a look. Reviews reported by several people are hidden automatically.",
+      );
+      if (result.hidden) {
+        await load();
+        onChanged();
+      }
+    } catch (e) {
+      Alert.alert("Couldn't send the report", (e as Error).message);
     }
   };
 
@@ -198,37 +234,45 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
           </View>
 
           <Text style={[styles.sectionTitle, { color: theme.text }]}>Reviews</Text>
+          {detail.reviews.some((r) => isBlocked(r.userId)) && (
+            <Text style={[styles.small, { color: theme.muted, marginBottom: 4 }]}>
+              Some reviews are hidden because you chose to hide those people.
+            </Text>
+          )}
           {detail.reviews.length === 0 ? (
             <Text style={[styles.emptyReviews, { color: theme.muted }]}>No reviews yet. Be the first to rate it.</Text>
           ) : (
-            detail.reviews.map((r, i) => (
-              <View key={r.id}>
-                {i > 0 && <Separator inset={0} />}
-                <ReviewItem
-                  review={r}
-                  mine={!!user && r.userId === user.id}
-                  onDelete={() =>
-                    Alert.alert('Delete your review?', 'This removes your rating and comment.', [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: 'Delete',
-                        style: 'destructive',
-                        onPress: async () => {
-                          try {
-                            await api.deleteReview(r.id);
-                            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                            await load();
-                            onChanged();
-                          } catch (e) {
-                            Alert.alert("Couldn't delete review", (e as Error).message);
-                          }
+            detail.reviews
+              .filter((r) => !isBlocked(r.userId))
+              .map((r, i) => (
+                <View key={r.id}>
+                  {i > 0 && <Separator inset={0} />}
+                  <ReviewItem
+                    review={r}
+                    mine={!!user && r.userId === user.id}
+                    onMore={() => reviewActions(r)}
+                    onDelete={() =>
+                      Alert.alert('Delete your review?', 'This removes your rating and comment.', [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                          text: 'Delete',
+                          style: 'destructive',
+                          onPress: async () => {
+                            try {
+                              await api.deleteReview(r.id);
+                              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                              await load();
+                              onChanged();
+                            } catch (e) {
+                              Alert.alert("Couldn't delete review", (e as Error).message);
+                            }
+                          },
                         },
-                      },
-                    ])
-                  }
-                />
-              </View>
-            ))
+                      ])
+                    }
+                  />
+                </View>
+              ))
           )}
         </ScrollView>
       )}
@@ -299,7 +343,17 @@ function Amenity({ on, yes, no }: { on: boolean; yes: string; no: string }) {
   );
 }
 
-function ReviewItem({ review, mine, onDelete }: { review: Review; mine: boolean; onDelete: () => void }) {
+function ReviewItem({
+  review,
+  mine,
+  onDelete,
+  onMore,
+}: {
+  review: Review;
+  mine: boolean;
+  onDelete: () => void;
+  onMore: () => void;
+}) {
   const theme = useTheme();
   const date = new Date(review.createdAt).toLocaleDateString(undefined, {
     month: 'short',
@@ -318,6 +372,16 @@ function ReviewItem({ review, mine, onDelete }: { review: Review; mine: boolean;
           <Text style={[styles.small, { color: theme.muted }]}>{date}</Text>
         </View>
         <Stars value={review.overall} />
+        {!mine && (
+          <Pressable
+            onPress={onMore}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Report or hide this review"
+          >
+            <Icon name="ellipsis" size={16} color={theme.muted} />
+          </Pressable>
+        )}
       </View>
       <Text style={[styles.small, { color: theme.muted }]}>
         Cleanliness {review.cleanliness} · Supplies {review.supplies} · Privacy {review.privacy}

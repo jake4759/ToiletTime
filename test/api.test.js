@@ -184,3 +184,57 @@ test('serves the app and blocks path traversal', async () => {
 test('health check responds', async () => {
   assert.deepStrictEqual(await (await fetch(`${base}/api/health`)).json(), { ok: true });
 });
+
+test('word filter: masks strong profanity in reviews and blocks offensive usernames', async () => {
+  const u = supabase.addUser();
+  assert.strictEqual((await request('PATCH', '/api/me', { username: 'big_fuck3r' }, u.token)).status, 400);
+  assert.strictEqual((await request('PATCH', '/api/me', { username: `dickens_${Date.now() % 1e5}` }, u.token)).status, 200);
+
+  const b = await addRestroom(u.token, { review: { ...stars, comment: 'Clean but the fucking dryer was broken. Total shit show.' } });
+  assert.strictEqual(b.reviews[0].comment, 'Clean but the f****** dryer was broken. Total shit show.');
+});
+
+test('reports: own review refused, three reports hide a review, moderators can restore it', async () => {
+  const author = await poster('author');
+  const b = await addRestroom(author.token, { review: { ...stars, overall: 1, comment: 'meh' } });
+  const reviewId = b.reviews[0].id;
+  const report = (token, reason = 'spam') => post(`/api/reviews/${reviewId}/report`, { reason }, token);
+
+  assert.strictEqual((await report(author.token)).status, 400);
+  assert.strictEqual((await report(undefined)).status, 401);
+  const first = supabase.addUser();
+  assert.strictEqual((await report(first.token, 'nonsense')).status, 400);
+  assert.deepStrictEqual(await (await report(first.token)).json(), { ok: true, hidden: false });
+  assert.deepStrictEqual(await (await report(first.token, 'offensive')).json(), { ok: true, hidden: false }); // same person again
+  await report(supabase.addUser().token);
+  const third = await (await report(supabase.addUser().token, 'false')).json();
+  assert.strictEqual(third.hidden, true);
+
+  let detail = await (await fetch(`${base}/api/bathrooms/${b.id}`)).json();
+  assert.strictEqual(detail.reviews.length, 0);
+  assert.strictEqual(detail.reviewCount, 0);
+  assert.strictEqual(detail.rating, null);
+  const mine = (await (await request('GET', '/api/me/reviews', undefined, author.token)).json()).reviews;
+  assert.strictEqual(mine[0].hidden, true, 'the author can see their review is hidden');
+
+  const store = await storeReady;
+  const reported = await store.listReported();
+  const entry = reported.find((r) => r.id === reviewId);
+  assert.strictEqual(entry.reports.length, 3);
+  assert.strictEqual(await store.moderate(reviewId, 'restore'), true);
+  detail = await (await fetch(`${base}/api/bathrooms/${b.id}`)).json();
+  assert.strictEqual(detail.reviewCount, 1);
+  assert.ok(!(await store.listReported()).some((r) => r.id === reviewId));
+
+  assert.strictEqual(await store.moderate(reviewId, 'delete'), true);
+  detail = await (await fetch(`${base}/api/bathrooms/${b.id}`)).json();
+  assert.strictEqual(detail.reviewCount, 0);
+});
+
+test('Terms and Privacy pages are served with the contact email', async () => {
+  for (const page of ['/terms', '/privacy']) {
+    const html = await (await fetch(base + page)).text();
+    assert.match(html, /ToiletTime/);
+    assert.ok(!html.includes('{{CONTACT_EMAIL}}'));
+  }
+});

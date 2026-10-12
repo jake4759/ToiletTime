@@ -328,6 +328,7 @@ legend { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-sp
 #authForm:not([data-mode="signIn"]):not([data-mode="signUp"]) .only-password,
 #authForm:not([data-mode="verify"]):not([data-mode="reset"]) .only-code,
 #authForm:not([data-mode="reset"]) .only-reset,
+#authForm:not([data-mode="signUp"]) .only-signup,
 #authForm:not([data-mode="verify"]) .only-verify { display: none !important; }
 .forgot { justify-self: end; margin-top: -6px; font-size: 13px; }
 .google-btn { gap: 10px; height: 40px; }
@@ -359,6 +360,17 @@ legend { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-sp
 .my-reviews .empty { color: var(--muted); font-size: 13px; }
 .delete-review { color: var(--bad); }
 .review-actions { margin-top: 6px; }
+
+.legal-note { font-size: 12px; color: var(--muted); text-align: center; margin: 8px 0 0; }
+.agree { align-items: flex-start; font-size: 13px; color: var(--ink-2); }
+.agree input { margin-top: 2px; }
+.agree a, .legal-note a { color: var(--brand); font-weight: 600; }
+.about-links { margin: 0; font-size: 14px; }
+.review-actions { display: flex; gap: 14px; }
+.review-actions .btn-link { font-size: 12px; color: var(--muted); padding: 0; }
+.hidden-badge { font-size: 12px; color: var(--bad); }
+.side-foot { padding: 10px 16px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); }
+.side-foot a { color: var(--muted); }
 
 /* ---------- nearby places ---------- */
 

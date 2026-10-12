@@ -32,6 +32,7 @@ You need a computer (Windows, Mac or Linux) with [Node.js](https://nodejs.org) 1
 | 7 | Open the website on this PC |
 | 8 | Show the commands |
 | 9 | Put a ToiletTime shortcut on your Desktop |
+| 10 | See reported reviews (moderation) |
 
 **With commands instead:**
 
@@ -62,29 +63,16 @@ Accounts, sign-in, email codes and password resets are handled by Supabase, so T
 2. Open **Project Settings → API Keys** and keep the page open. You'll need the **Project URL**, the **publishable** key (older projects call it **anon public**), and the **secret** key (older projects: **service_role**). The secret key can delete accounts, so never share it or put it in the app.
 3. On your computer, double-click **ToiletTime.bat** and choose **5 Connect accounts**, or run `npm run configure`. Paste the three values when asked. For the optional database question, see [Put it online](#put-it-online).
 
-### 2. Send codes instead of links
+### 2. Send branded codes instead of links
 
-The apps verify emails and reset passwords with 6-digit codes. In Supabase, open **Authentication → Emails** and edit two templates:
+The apps verify emails and reset passwords with 6-digit codes. In Supabase, open **Authentication → Emails** and edit two templates. Ready-made, ToiletTime-branded versions are in [`docs/email-templates`](docs/email-templates):
 
-- **Confirm signup.** Subject: `Your ToiletTime code`. Body:
+| Template | Subject | Message body |
+| --- | --- | --- |
+| **Confirm signup** | `Your ToiletTime verification code: {{ .Token }}` | Paste all of `docs/email-templates/confirm-signup.html` |
+| **Reset password** | `Your ToiletTime password reset code: {{ .Token }}` | Paste all of `docs/email-templates/reset-password.html` |
 
-  ```html
-  <h2>Welcome to ToiletTime</h2>
-  <p>Your verification code is:</p>
-  <p style="font-size:28px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
-  <p>Enter it in the app to finish creating your account.</p>
-  ```
-
-- **Reset password.** Subject: `Reset your ToiletTime password`. Body:
-
-  ```html
-  <h2>Reset your password</h2>
-  <p>Your code is:</p>
-  <p style="font-size:28px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
-  <p>If you didn't ask to reset your password, you can ignore this email.</p>
-  ```
-
-Also check that **Authentication → Sign In / Providers → Email** has **Confirm email** turned on.
+Click **Save** on each. Also check that **Authentication → Sign In / Providers → Email** has **Confirm email** turned on.
 
 ### 3. Let it email everyone
 
@@ -162,6 +150,8 @@ Settings come from environment variables or a `.env` file in this folder (`npm r
 | `PROFILE_LIMIT` | `30` | Profile changes (username, picture) per client every 10 minutes |
 | `PLACES_LIMIT` | `300` | Nearby-places lookups per client every 10 minutes |
 | `OVERPASS_URL` | public servers | OpenStreetMap Overpass endpoints for nearby places (comma-separated) |
+| `CONTACT_EMAIL` | none | Contact address shown in the Terms, Privacy Policy and the app's "Contact support" |
+| `HIDE_AFTER_REPORTS` | `3` | Reports from different people that hide a review automatically |
 
 For the app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 
@@ -172,13 +162,14 @@ Requests that need an account send the Supabase access token as `Authorization: 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/config` | Supabase URL and publishable key for the apps (or `null` when accounts are off) |
+| `GET` | `/api/config` | Supabase URL and publishable key for the apps (or `null` when accounts are off), and the contact email |
 | `GET` | `/api/places?south=&west=&north=&east=` | Unrated businesses and mapped restrooms in an area (at most about 7 km across) |
 | `GET` | `/api/bathrooms?q=&type=&sort=` | Rated restrooms with average scores |
 | `GET` | `/api/bathrooms/:id` | A restroom and its reviews |
 | `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `osmId`, optional `review`). Needs a verified account with a username. |
 | `POST` | `/api/bathrooms/:id/reviews` | Add or update your review (`overall`, `cleanliness`, `supplies`, `privacy` from 1 to 5, optional `comment`) |
 | `DELETE` | `/api/reviews/:id` | Delete one of your reviews |
+| `POST` | `/api/reviews/:id/report` | Report a review (`reason`: `spam`, `offensive`, `false`, `private` or `other`) |
 | `GET` | `/api/me` | Your profile, email and verification status |
 | `PATCH` | `/api/me` | Change `username` or `markerColor` |
 | `PUT` / `DELETE` | `/api/me/avatar` | Upload (`image`: base64 JPEG or PNG) or remove your profile picture |
@@ -197,6 +188,34 @@ Requests that need an account send the Supabase access token as `Authorization: 
 - **Account deletion** is built in, as Apple requires, and removes the account from Supabase.
 
 `npm audit` in `mobile/` reports issues only in Expo's build tools that run on your computer, not in the app or the server.
+
+## Legal and safety
+
+ToiletTime includes the basics that apps with accounts and user reviews are expected to have, and that Apple requires for apps with user-generated content. This isn't legal advice; have a lawyer review things if the app grows, makes money, or you get a legal complaint.
+
+**Built in**
+
+- **Terms of Service** (`/terms`) and **Privacy Policy** (`/privacy`), linked from the sign-up screen, the profile and the website. Run `npm run configure` (menu option 5) and enter a **contact email**; it's shown in both documents and in the app's "Contact support". The Terms are written for an individual operator in Texas; edit `public/terms.html` and `public/privacy.html` if that changes.
+- **Agreement at sign-up**: creating an account requires confirming you're 13 or older and agree to the Terms and Privacy Policy.
+- **Reporting and blocking**: anyone signed in can report a review, and anyone can hide a person's reviews. Reviews reported by 3 different people (`HIDE_AFTER_REPORTS`) are hidden automatically.
+- **Word filter**: strong profanity and slurs are starred out in reviews and not allowed in usernames.
+- **Moderation**: menu option 10 or `npm run moderate` lists reported reviews; `npm run moderate -- delete <id>` removes one and `npm run moderate -- restore <id>` keeps it. Check reports regularly; Apple expects reports to be acted on within 24 hours.
+- **Account deletion** inside the app, as Apple requires.
+- **Attribution**: OpenStreetMap credit next to place data, as its license requires.
+
+**Before you publish with TestFlight or the App Store**
+
+1. In App Store Connect, set the **Privacy Policy URL** to `https://YOUR-SERVER/privacy` and the **Support URL** to your website.
+2. Fill in **App Privacy** honestly. For ToiletTime as built: *Contact Info: Email Address* (app functionality, linked to the user); *User Content: Photos and Other User Content* (app functionality, linked to the user); *Identifiers: User ID* (app functionality, linked to the user); *Location: Coarse Location* (app functionality, not linked, because the visible map area is sent to find nearby places). No tracking, no ads.
+3. In the **age rating** questionnaire, say the app has user-generated content.
+4. In the review notes, explain the report, hide and moderation features, and give Apple a test account.
+
+**Worth doing as the app grows**
+
+- Search the name "ToiletTime" in the [USPTO trademark database](https://www.uspto.gov/trademarks/search) to make sure nobody else owns it.
+- Consider forming an **LLC** so the app's legal risks are separate from your personal assets, and publish the Terms under its name.
+- If people may post others' copyrighted photos, register a **DMCA agent** with the U.S. Copyright Office (a small fee) to get the legal "safe harbor" for copyright complaints.
+- In the U.S., Section 230 generally protects apps from liability for what their users post, but it doesn't cover what you write yourself. Respond to reports and legal requests promptly.
 
 ## Third-party services
 
