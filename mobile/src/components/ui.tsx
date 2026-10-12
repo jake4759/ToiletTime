@@ -1,8 +1,9 @@
 import * as Haptics from 'expo-haptics';
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
-import type { ReactNode, Ref } from 'react';
+import { useState, type ReactNode, type Ref } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -13,6 +14,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 
+import { API_URL } from '../api';
 import { formatRating, ratingColor, useTheme } from '../theme';
 
 /** An SF Symbol name (iOS). Android draws the matching Material Symbol from ANDROID_ICONS. */
@@ -48,6 +50,12 @@ const ANDROID_ICONS: Partial<Record<SymbolName, AndroidName>> = {
   'lock.fill': 'lock',
   'checkmark.seal.fill': 'verified',
   pencil: 'edit',
+  eye: 'visibility',
+  'eye.slash': 'visibility_off',
+  photo: 'image',
+  'rectangle.portrait.and.arrow.right': 'logout',
+  paintpalette: 'palette',
+  'envelope.badge': 'mark_email_read',
 };
 type AndroidName = Extract<Exclude<SymbolViewProps['name'], string>['android'], string>;
 
@@ -285,7 +293,8 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 13, marginLeft: 16, marginBottom: 7 },
   sectionBody: { borderRadius: 12, overflow: 'hidden' },
   sectionFooter: { fontSize: 13, marginHorizontal: 16, marginTop: 7, lineHeight: 18 },
-  field: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, minHeight: 46 },
+  field: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, minHeight: 46, gap: 8 },
+  avatarFallback: { alignItems: 'center', justifyContent: 'center' },
   fieldLabel: { fontSize: 17, width: 96 },
   fieldInput: { flex: 1, fontSize: 17, paddingVertical: 12 },
   sheetHeader: {
@@ -299,3 +308,71 @@ const styles = StyleSheet.create({
   sheetTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontWeight: '600' },
   headerAction: { fontSize: 17 },
 });
+
+/** A profile picture, or the person's initial when they haven't set one. */
+export function Avatar({
+  url,
+  name,
+  size = 34,
+  color,
+}: {
+  url?: string | null;
+  name?: string | null;
+  size?: number;
+  color?: string | null;
+}) {
+  const theme = useTheme();
+  const [failed, setFailed] = useState(false);
+  const round = { width: size, height: size, borderRadius: size / 2 };
+  if (url && !failed) {
+    return (
+      <Image
+        source={{ uri: url.startsWith('http') ? url : `${API_URL}${url}` }}
+        style={[round, { backgroundColor: theme.surfaceAlt }]}
+        onError={() => setFailed(true)}
+        accessibilityIgnoresInvertColors
+      />
+    );
+  }
+  const initial = (name ?? '')
+    .replace(/[^A-Za-z0-9]/g, '')
+    .slice(0, 1)
+    .toUpperCase();
+  return (
+    <View style={[round, styles.avatarFallback, { backgroundColor: color ?? theme.brandSoft }]}>
+      {initial ? (
+        <Text style={{ color: color ? '#fff' : theme.brand, fontWeight: '700', fontSize: size * 0.42 }}>{initial}</Text>
+      ) : (
+        <Icon name="person.fill" size={size * 0.5} color={color ? '#fff' : theme.brand} />
+      )}
+    </View>
+  );
+}
+
+/** A password box with a show/hide button. */
+export function PasswordField({ label, ref, ...props }: TextInputProps & { label: string; ref?: Ref<TextInput> }) {
+  const theme = useTheme();
+  const [visible, setVisible] = useState(false);
+  return (
+    <View style={styles.field}>
+      <Text style={[styles.fieldLabel, { color: theme.text }]}>{label}</Text>
+      <TextInput
+        ref={ref}
+        placeholderTextColor={theme.muted}
+        style={[styles.fieldInput, { color: theme.text }]}
+        secureTextEntry={!visible}
+        autoCapitalize="none"
+        autoCorrect={false}
+        {...props}
+      />
+      <Pressable
+        onPress={() => setVisible((v) => !v)}
+        hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel={visible ? 'Hide password' : 'Show password'}
+      >
+        <Icon name={visible ? 'eye.slash' : 'eye'} size={18} color={theme.muted} />
+      </Pressable>
+    </View>
+  );
+}

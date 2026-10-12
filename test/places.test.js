@@ -6,6 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { parsePlaces, buildQuery } = require('../places');
+const { startFakeSupabase } = require('./fake-supabase');
+
+const supabase = startFakeSupabase();
 
 // A fake Overpass server standing in for OpenStreetMap.
 const elements = [
@@ -46,6 +49,7 @@ const { server, storeReady } = require('../server');
 
 let base;
 before(async () => {
+  await supabase.listen();
   await new Promise((r) => overpass.listen(0, r));
   await new Promise((r) => busy.listen(0, r));
   process.env.OVERPASS_URL = [busy, overpass].map((s) => `http://127.0.0.1:${s.address().port}/api/interpreter`).join(',');
@@ -56,6 +60,7 @@ after(async () => {
   await new Promise((r) => server.close(r));
   await new Promise((r) => overpass.close(r));
   await new Promise((r) => busy.close(r));
+  await supabase.close();
   await (await storeReady).close();
 });
 
@@ -102,18 +107,22 @@ test('lookups for different areas go to Overpass one at a time', async () => {
 });
 
 test('rating a map place twice keeps a single restroom', async () => {
-  const signUp = async (name) =>
-    (await (await fetch(`${base}/api/auth/signup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email: `${name}${Date.now()}@example.com`, password: 'longpassword1' }),
-    })).json()).token;
+  const signUp = async (name) => {
+    const { token } = supabase.addUser();
+    await fetch(`${base}/api/me`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ username: `${name}_${Date.now() % 100000}` }),
+    });
+    return token;
+  };
+  const placeId = `way/${Date.now()}`;
   const rate = (token, overall) =>
     fetch(`${base}/api/bathrooms`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
-        osmId: 'way/3', name: 'Burger Spot', type: 'restaurant', lat: 28.4185, lng: -81.5815,
+        osmId: placeId, name: 'Burger Spot', type: 'restaurant', lat: 28.4185, lng: -81.5815,
         review: { overall, cleanliness: 3, supplies: 3, privacy: 3 },
       }),
     });
@@ -125,7 +134,7 @@ test('rating a map place twice keeps a single restroom', async () => {
   const [first, second] = [await a.json(), await b.json()];
   assert.strictEqual(second.id, first.id);
   assert.strictEqual(second.reviewCount, 2);
-  assert.strictEqual(second.osmId, 'way/3');
+  assert.strictEqual(second.osmId, placeId);
 
   const bad = await fetch(`${base}/api/bathrooms`, {
     method: 'POST',
@@ -143,16 +152,4 @@ test('responses carry security headers', async () => {
     assert.match(res.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   }
   assert.strictEqual((await fetch(`${base}/api/health`)).headers.get('cache-control'), 'no-store');
-});
-
-test('expired sessions are rejected', { skip: !!process.env.DATABASE_URL }, async () => {
-  const res = await fetch(`${base}/api/auth/signup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Old', email: `old${Date.now()}@example.com`, password: 'longpassword1' }),
-  });
-  const { token } = await res.json();
-  const store = await storeReady;
-  for (const s of store.sessions) s.createdAt = '2000-01-01T00:00:00.000Z';
-  assert.strictEqual((await fetch(`${base}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })).status, 401);
 });

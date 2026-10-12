@@ -15,7 +15,8 @@
           "NSAllowsLocalNetworking": true
         },
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "usesAppleSignIn": true
     },
     "android": {
       "package": "com.jake4759.toilettime",
@@ -51,7 +52,17 @@
           }
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ToiletTime uses your photos so you can choose a profile picture.",
+          "cameraPermission": "ToiletTime uses the camera so you can take a profile picture.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-apple-authentication"
     ]
   }
 }

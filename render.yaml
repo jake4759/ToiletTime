@@ -1,6 +1,7 @@
 # Render Blueprint: https://render.com/docs/blueprint-spec
-# Deploys the ToiletTime server (API + web app). Ratings are stored in the Postgres
-# database given by DATABASE_URL; Render asks for it when you create the Blueprint.
+# Deploys the ToiletTime server (API + web app). Render asks for the values marked
+# sync: false when you create the Blueprint: your Supabase project's URL and keys, and its
+# database connection string (DATABASE_URL), where ratings are stored.
 services:
   - type: web
     name: toilettime
@@ -15,4 +16,10 @@ services:
       - key: TRUST_PROXY
         value: "1"
       - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false

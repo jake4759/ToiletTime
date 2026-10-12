@@ -1,6 +1,16 @@
 import Constants from 'expo-constants';
 
-import type { NewRestroom, Place, PlaceType, Restroom, RestroomDetail, Review, ReviewDraft, User } from './types';
+import type {
+  MyReview,
+  NewRestroom,
+  Place,
+  PlaceType,
+  Restroom,
+  RestroomDetail,
+  Review,
+  ReviewDraft,
+  User,
+} from './types';
 
 /**
  * Where the ToiletTime server lives. Set EXPO_PUBLIC_API_URL for a deployed server;
@@ -20,6 +30,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** Why posting was refused: 'signin', 'unverified' or 'username'. */
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -27,14 +39,14 @@ export class ApiError extends Error {
 
 let authToken: string | null = null;
 
-/** Token sent with every request once the user is signed in (managed by AuthProvider). */
+/** Supabase access token sent with every request once the user is signed in (managed by AuthProvider). */
 export function setAuthToken(token: string | null) {
   authToken = token;
 }
 
-async function request<T>(path: string, options: { method?: string; body?: unknown; token?: string } = {}): Promise<T> {
+async function request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
   const { body, method = body === undefined ? 'GET' : 'POST' } = options;
-  const token = options.token ?? authToken;
+  const token = authToken;
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, {
@@ -49,13 +61,8 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
     throw new ApiError("Can't reach the ToiletTime server. Check your internet connection.", 0);
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status);
+  if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status, data.code);
   return data as T;
-}
-
-interface Session {
-  token: string;
-  user: User;
 }
 
 export const api = {
@@ -70,12 +77,16 @@ export const api = {
       `/api/places?south=${b.south}&west=${b.west}&north=${b.north}&east=${b.east}`,
     ),
 
-  signUp: (name: string, email: string, password: string) =>
-    request<Session>('/api/auth/signup', { body: { name, email, password } }),
-  signIn: (email: string, password: string) => request<Session>('/api/auth/login', { body: { email, password } }),
-  me: (token: string) => request<{ user: User }>('/api/auth/me', { token }).then((d) => d.user),
-  signOut: () => request<{ ok: true }>('/api/auth/logout', { body: {} }),
-  deleteAccount: () => request<{ ok: true }>('/api/auth/me', { method: 'DELETE' }),
+  config: () => request<{ auth: { supabaseUrl: string; supabaseKey: string } | null }>('/api/config'),
+  me: () => request<{ user: User }>('/api/me').then((d) => d.user),
+  updateMe: (fields: { username?: string; markerColor?: string | null }) =>
+    request<{ user: User }>('/api/me', { method: 'PATCH', body: fields }).then((d) => d.user),
+  setAvatar: (imageBase64: string) =>
+    request<{ user: User }>('/api/me/avatar', { method: 'PUT', body: { image: imageBase64 } }).then((d) => d.user),
+  removeAvatar: () => request<{ user: User }>('/api/me/avatar', { method: 'DELETE' }).then((d) => d.user),
+  myReviews: () => request<{ reviews: MyReview[] }>('/api/me/reviews').then((d) => d.reviews),
+  deleteReview: (id: string) => request<{ ok: true }>(`/api/reviews/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteAccount: () => request<{ ok: true }>('/api/me', { method: 'DELETE' }),
 };
 
 // ---------- place search (OpenStreetMap Nominatim) ----------

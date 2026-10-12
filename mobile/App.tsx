@@ -8,9 +8,9 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 
 import { API_URL, IS_HOSTED_API, api } from './src/api';
 import { AuthProvider, useAuth } from './src/auth';
-import { Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
+import { Avatar, Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
 import { distanceMeters, formatDistance } from './src/geo';
-import { AccountSheet } from './src/screens/AccountSheet';
+import { AccountSheet, CHARACTER_COLORS } from './src/screens/AccountSheet';
 import { AddSheet, type AddRequest } from './src/screens/AddSheet';
 import { DetailSheet } from './src/screens/DetailSheet';
 import { ListSheet } from './src/screens/ListSheet';
@@ -58,7 +58,8 @@ function MapScreen() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [addRequest, setAddRequest] = useState<AddRequest | null>(null);
   const pendingDetail = useRef<string | null>(null);
-  const { user } = useAuth();
+  const { user, missing } = useAuth();
+  const pendingRestroom = useRef<string | null>(null);
   const [account, setAccount] = useState<{ open: boolean; reason: string | null }>({ open: false, reason: null });
   const addAfterSignIn = useRef<AddRequest | null>(null);
 
@@ -83,15 +84,28 @@ function MapScreen() {
 
   useEffect(() => {
     load();
+    let watcher: Location.LocationSubscription | undefined;
+    let cancelled = false;
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
+      if (status !== 'granted' || cancelled) return;
       const pos = (await Location.getLastKnownPositionAsync()) ?? (await Location.getCurrentPositionAsync());
       const here = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
       setUserLocation(here);
-      mapRef.current?.animateToRegion({ ...here, latitudeDelta: 0.08, longitudeDelta: 0.08 }, 600);
+      mapRef.current?.animateToRegion({ ...here, latitudeDelta: 0.03, longitudeDelta: 0.03 }, 600);
+      // Keep your character on the map in step with where you are.
+      watcher = await Location.watchPositionAsync({ accuracy: Location.Accuracy.Balanced, distanceInterval: 15 }, (p) =>
+        setUserLocation({ latitude: p.coords.latitude, longitude: p.coords.longitude }),
+      );
+      if (cancelled) watcher.remove();
     })().catch(() => {});
+    return () => {
+      cancelled = true;
+      watcher?.remove();
+    };
   }, [load]);
+
+  const closeAccount = useCallback(() => setAccount((a) => ({ ...a, open: false })), []);
 
   const selected = useMemo(() => restrooms.find((r) => r.id === selectedId) ?? null, [restrooms, selectedId]);
 
@@ -168,8 +182,8 @@ function MapScreen() {
   };
 
   const openAdd = (request: AddRequest) => {
-    if (user) return setAddRequest(request);
-    // Ask the user to sign in first, then continue to the add sheet.
+    if (user && !missing) return setAddRequest(request);
+    // Finish signing in (or verifying, or picking a username) first, then continue to the add sheet.
     addAfterSignIn.current = request;
     setAccount({
       open: true,
@@ -196,7 +210,7 @@ function MapScreen() {
         ref={mapRef}
         style={StyleSheet.absoluteFill}
         initialRegion={WORLD}
-        showsUserLocation={!!userLocation}
+        showsUserLocation={false}
         showsPointsOfInterests={false}
         showsCompass={false}
         userInterfaceStyle={theme.dark ? 'dark' : 'light'}
@@ -208,6 +222,7 @@ function MapScreen() {
         onLongPress={(e) => startAdd(e.nativeEvent.coordinate)}
         onRegionChangeComplete={(region) => loadPlaces(region)}
       >
+        {userLocation && <CharacterMarker coordinate={userLocation} />}
         {unratedPlaces.map((p) => (
           <PlacePin
             key={p.osmId}
@@ -251,14 +266,10 @@ function MapScreen() {
           <Pressable
             onPress={() => setAccount({ open: true, reason: null })}
             hitSlop={8}
-            accessibilityLabel={user ? `Account, signed in as ${user.name}` : 'Sign in'}
+            accessibilityLabel={user ? `Profile, signed in as ${user.username ?? user.email}` : 'Sign in'}
           >
             {user ? (
-              <View style={[styles.miniAvatar, { backgroundColor: theme.brandSoft }]}>
-                <Text style={[styles.miniAvatarText, { color: theme.brand }]}>
-                  {user.name.slice(0, 1).toUpperCase()}
-                </Text>
-              </View>
+              <Avatar url={user.avatarUrl} name={user.username} size={30} color={user.markerColor} />
             ) : (
               <Icon name="person.crop.circle" size={26} color={theme.brand} />
             )}
@@ -341,12 +352,26 @@ function MapScreen() {
       <AccountSheet
         visible={account.open}
         reason={account.reason}
-        onClose={() => setAccount((a) => ({ ...a, open: false }))}
+        onClose={closeAccount}
+        onOpenRestroom={(id) => {
+          pendingRestroom.current = id;
+          closeAccount();
+        }}
         onDismiss={() => {
-          // Continue to the add sheet once the account sheet has finished closing.
+          // Continue once the account sheet has finished closing.
           const request = addAfterSignIn.current;
           addAfterSignIn.current = null;
-          if (request && user) setAddRequest(request);
+          if (request && user && !missing) setAddRequest(request);
+          const restroomId = pendingRestroom.current;
+          pendingRestroom.current = null;
+          if (restroomId) {
+            const r = restrooms.find((x) => x.id === restroomId);
+            if (r) {
+              selectRestroom(r.id);
+              focusOn(r);
+            }
+            setDetailId(restroomId);
+          }
         }}
       />
 
@@ -390,6 +415,33 @@ const RestroomPin = memo(function RestroomPin({
     </Marker>
   );
 });
+
+/** You on the map: your profile picture (or a person) inside a ring in your chosen color. */
+function CharacterMarker({ coordinate }: { coordinate: LatLng }) {
+  const { user } = useAuth();
+  const color = user?.markerColor ?? CHARACTER_COLORS[0];
+  return (
+    <Marker
+      // Remount when the look changes; one marker can afford to track changes so the photo appears once loaded.
+      key={`me-${color}-${user?.avatarUrl ?? 'none'}`}
+      coordinate={coordinate}
+      anchor={{ x: 0.5, y: 0.5 }}
+      zIndex={20}
+      tracksViewChanges
+      accessibilityLabel="You are here"
+    >
+      <View style={[styles.character, { borderColor: color }]}>
+        {user?.avatarUrl ? (
+          <Avatar url={user.avatarUrl} name={user.username} size={36} />
+        ) : (
+          <View style={[styles.characterBody, { backgroundColor: color }]}>
+            <Icon name="person.fill" size={22} color="#fff" />
+          </View>
+        )}
+      </View>
+    </Marker>
+  );
+}
 
 const PlacePin = memo(function PlacePin({
   place,
@@ -535,8 +587,20 @@ const styles = StyleSheet.create({
   searchText: { flex: 1, fontSize: 17 },
   count: { fontSize: 15, fontVariant: ['tabular-nums'] },
   divider: { width: StyleSheet.hairlineWidth, height: 24 },
-  miniAvatar: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  miniAvatarText: { fontSize: 13, fontWeight: '700' },
+  character: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    borderWidth: 4,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  characterBody: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   banner: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, padding: 14 },
   bannerTitle: { fontSize: 15, fontWeight: '600' },
   bannerText: { fontSize: 13, marginTop: 2 },

@@ -4,12 +4,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+loadEnvFile(path.join(__dirname, '.env'));
+
 const { fetchPlaces, parseBbox } = require('./places');
-const { createStore } = require('./store');
+const { createStore, isUuid } = require('./store');
+const supabase = require('./supabase');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY = 32 * 1024;
+const MAX_AVATAR_BODY = 600 * 1024;
+const MAX_AVATAR_BYTES = 400 * 1024;
 
 const PLACE_TYPES = ['restaurant', 'cafe', 'store', 'mall', 'gas_station', 'hotel', 'bar', 'public', 'other'];
 
@@ -23,10 +28,29 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
+/** Reads KEY=value lines from a .env file into process.env (without overriding real env vars). */
+function loadEnvFile(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return;
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!m || line.trim().startsWith('#')) continue;
+    const value = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    if (process.env[m[1]] === undefined) process.env[m[1]] = value;
+  }
+}
+
 // ---------- storage & limits ----------
 
 if (process.env.RENDER && !process.env.DATABASE_URL) {
   console.warn('DATABASE_URL is not set: ratings are kept in a local file and will be lost when the server restarts.');
+}
+if (!supabase.isConfigured()) {
+  console.warn('Supabase is not set up yet, so sign-in is turned off. Run "npm run configure" to connect it.');
 }
 
 const storeReady = createStore();
@@ -59,7 +83,7 @@ function rateLimiter(limit) {
 }
 
 const allowWrite = rateLimiter(Number(process.env.WRITE_LIMIT) || 30);
-const allowAuthAttempt = rateLimiter(Number(process.env.AUTH_LIMIT) || 20);
+const allowProfileChange = rateLimiter(Number(process.env.PROFILE_LIMIT) || 30);
 const allowPlacesLookup = rateLimiter(Number(process.env.PLACES_LIMIT) || 300);
 
 setInterval(() => {
@@ -71,33 +95,12 @@ setInterval(() => {
 
 // ---------- accounts ----------
 
-const scrypt = (password, salt) =>
-  new Promise((resolve, reject) =>
-    crypto.scrypt(password, salt, 64, (err, key) => (err ? reject(err) : resolve(key))),
-  );
-
-async function hashPassword(password) {
-  const salt = crypto.randomBytes(16);
-  return `scrypt$${salt.toString('hex')}$${(await scrypt(password, salt)).toString('hex')}`;
-}
-
-async function verifyPassword(password, stored) {
-  const [scheme, salt, hash] = String(stored).split('$');
-  if (scheme !== 'scrypt' || !salt || !hash) return false;
-  const expected = Buffer.from(hash, 'hex');
-  const actual = await scrypt(password, Buffer.from(salt, 'hex'));
-  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
-}
-
-const dummyHash = hashPassword(crypto.randomBytes(16).toString('hex'));
-
-const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
-const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, createdAt: u.createdAt });
-
-async function startSession(store, user) {
-  const token = crypto.randomBytes(32).toString('base64url');
-  await store.createSession({ tokenHash: hashToken(token), userId: user.id, createdAt: new Date().toISOString() });
-  return { token, user: publicUser(user) };
+class HttpError extends Error {
+  constructor(status, message, code) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
 }
 
 function bearerToken(req) {
@@ -105,66 +108,110 @@ function bearerToken(req) {
   return match ? match[1] : null;
 }
 
-async function currentUser(store, req) {
-  const token = bearerToken(req);
-  return token ? store.findSessionUser(hashToken(token)) : null;
+/** The signed-in Supabase user, or throws 401. */
+async function requireUser(req) {
+  if (!supabase.isConfigured()) throw new HttpError(503, 'Sign-in is not set up on this server yet.');
+  let user;
+  try {
+    user = await supabase.getUser(bearerToken(req));
+  } catch (err) {
+    console.error('Supabase check failed:', err.message);
+    throw new HttpError(503, 'Sign-in is unavailable right now. Please try again.');
+  }
+  if (!user) throw new HttpError(401, 'Please sign in.', 'signin');
+  return user;
 }
 
-function email(v) {
-  const e = str(v, 254, true).toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new ValidationError('Enter a valid email address.');
-  return e;
+/** A signed-in user who may post: verified email and a username. Returns { user, profile }. */
+async function requirePoster(store, req) {
+  const user = await requireUser(req);
+  if (!user.emailVerified) throw new HttpError(403, 'Please verify your email before posting.', 'unverified');
+  const profile = await store.ensureProfile(user.id);
+  if (!profile.username) throw new HttpError(403, 'Choose a username before posting.', 'username');
+  return { user, profile };
 }
 
-function password(v) {
-  if (typeof v !== 'string' || v.length < 8) throw new ValidationError('Password must be at least 8 characters.');
-  if (v.length > 200) throw new ValidationError('Password is too long.');
-  return v;
+const RESERVED = new Set(['admin', 'administrator', 'toilettime', 'support', 'moderator', 'formermember', 'anonymous']);
+
+function username(v) {
+  const u = str(v, 20, true);
+  if (!/^[A-Za-z0-9_.]{3,20}$/.test(u) || /^\.|\.$|\.\./.test(u)) {
+    throw new ValidationError('Usernames are 3–20 letters, numbers, underscores or dots.');
+  }
+  if (RESERVED.has(u.toLowerCase().replace(/[_.]/g, ''))) throw new ValidationError('That username is reserved.');
+  return u;
 }
 
-async function handleAuth(req, res, store, action) {
-  // POST /api/auth/signup
-  if (action === 'signup' && req.method === 'POST') {
-    if (!allowAuthAttempt(req)) return send(res, 429, { error: 'Too many attempts. Please try again in a few minutes.' });
+function markerColor(v) {
+  if (v === null) return null;
+  if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) throw new ValidationError('invalid color');
+  return v.toLowerCase();
+}
+
+/** Decodes an uploaded profile picture and checks it really is a JPEG or PNG. */
+function avatarImage(body) {
+  const raw = typeof body.image === 'string' ? body.image.replace(/^data:image\/\w+;base64,/, '') : '';
+  if (!raw || !/^[A-Za-z0-9+/=\s]+$/.test(raw)) throw new ValidationError('Choose a photo to upload.');
+  const data = Buffer.from(raw, 'base64');
+  if (data.length > MAX_AVATAR_BYTES) throw new ValidationError('That photo is too large.');
+  const jpeg = data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+  const png = data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (!jpeg && !png) throw new ValidationError('Profile pictures must be JPEG or PNG images.');
+  return { data, type: jpeg ? 'image/jpeg' : 'image/png' };
+}
+
+async function me(store, user) {
+  const profile = await store.ensureProfile(user.id);
+  return { ...profile, email: user.email, emailVerified: user.emailVerified, provider: user.provider };
+}
+
+async function handleMe(req, res, store, parts) {
+  const user = await requireUser(req);
+  const sub = parts[2];
+
+  // GET /api/me
+  if (!sub && req.method === 'GET') return send(res, 200, { user: await me(store, user) });
+
+  // PATCH /api/me  { username?, markerColor? }
+  if (!sub && req.method === 'PATCH') {
+    if (!allowProfileChange(req)) throw new HttpError(429, 'Too many changes. Please try again in a few minutes.');
+    await store.ensureProfile(user.id);
     const body = await readJson(req);
-    const user = await store.createUser({
-      id: crypto.randomUUID(),
-      email: email(body.email),
-      name: str(body.name, 40, true),
-      passwordHash: await hashPassword(password(body.password)),
-      createdAt: new Date().toISOString(),
-    });
-    if (!user) return send(res, 409, { error: 'An account with this email already exists. Try signing in.' });
-    return send(res, 201, await startSession(store, user));
+    const fields = {};
+    if (body.username !== undefined) fields.username = username(body.username);
+    if (body.markerColor !== undefined) fields.markerColor = markerColor(body.markerColor);
+    const result = await store.updateProfile(user.id, fields);
+    if (result?.conflict) throw new HttpError(409, 'That username is taken. Try another one.');
+    return send(res, 200, { user: await me(store, user) });
   }
 
-  // POST /api/auth/login
-  if (action === 'login' && req.method === 'POST') {
-    if (!allowAuthAttempt(req)) return send(res, 429, { error: 'Too many attempts. Please try again in a few minutes.' });
-    const body = await readJson(req);
-    const user = await store.findUserByEmail(String(body.email || '').trim().toLowerCase());
-    // Check a password even when the email is unknown, so response times don't reveal which emails exist.
-    const ok = await verifyPassword(String(body.password || ''), user ? user.passwordHash : await dummyHash);
-    if (!user || !ok) return send(res, 401, { error: 'Incorrect email or password.' });
-    return send(res, 200, await startSession(store, user));
-  }
-
-  const user = await currentUser(store, req);
-  if (!user) return send(res, 401, { error: 'Please sign in.' });
-
-  // GET /api/auth/me
-  if (action === 'me' && req.method === 'GET') return send(res, 200, { user: publicUser(user) });
-
-  // POST /api/auth/logout
-  if (action === 'logout' && req.method === 'POST') {
-    await store.deleteSession(hashToken(bearerToken(req)));
+  // DELETE /api/me  (permanently deletes the account; reviews stay without the name)
+  if (!sub && req.method === 'DELETE') {
+    try {
+      await supabase.deleteUser(user.id);
+    } catch (err) {
+      console.error('Account deletion failed:', err.message);
+      throw new HttpError(503, "Couldn't delete the account right now. Please try again.");
+    }
+    await store.deleteProfile(user.id);
     return send(res, 200, { ok: true });
   }
 
-  // DELETE /api/auth/me  (account deletion)
-  if (action === 'me' && req.method === 'DELETE') {
-    await store.deleteUser(user.id);
-    return send(res, 200, { ok: true });
+  // PUT /api/me/avatar  { image: base64 JPEG/PNG }   DELETE /api/me/avatar
+  if (sub === 'avatar' && parts.length === 3 && (req.method === 'PUT' || req.method === 'DELETE')) {
+    if (!allowProfileChange(req)) throw new HttpError(429, 'Too many changes. Please try again in a few minutes.');
+    await store.ensureProfile(user.id);
+    if (req.method === 'DELETE') await store.setAvatar(user.id, null, null);
+    else {
+      const { data, type } = avatarImage(await readJson(req, MAX_AVATAR_BODY));
+      await store.setAvatar(user.id, data, type);
+    }
+    return send(res, 200, { user: await me(store, user) });
+  }
+
+  // GET /api/me/reviews
+  if (sub === 'reviews' && parts.length === 3 && req.method === 'GET') {
+    return send(res, 200, { reviews: await store.listUserReviews(user.id) });
   }
 
   return send(res, 404, { error: 'not found' });
@@ -198,12 +245,12 @@ function num(v, min, max, name) {
 
 class ValidationError extends Error {}
 
-function validateReview(body, user) {
+function validateReview(body, profile) {
   if (!body || typeof body !== 'object') throw new ValidationError('missing review');
   return {
     id: crypto.randomUUID(),
-    userId: user.id,
-    author: user.name,
+    userId: profile.id,
+    author: profile.username,
     overall: stars(body.overall, 'overall'),
     cleanliness: stars(body.cleanliness, 'cleanliness'),
     supplies: stars(body.supplies, 'supplies'),
@@ -240,18 +287,21 @@ function validateBathroom(body) {
 
 // ---------- security headers ----------
 
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data: https://*.basemaps.cartocdn.com",
-  "connect-src 'self' https://nominatim.openstreetmap.org",
-  "frame-ancestors 'none'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "object-src 'none'",
-].join('; ');
+function contentSecurityPolicy() {
+  const supabaseOrigin = supabase.config().url;
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https://*.basemaps.cartocdn.com",
+    `connect-src 'self' https://nominatim.openstreetmap.org${supabaseOrigin ? ` ${supabaseOrigin}` : ''}`,
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join('; ');
+}
 
 const isHttps = (req) => process.env.TRUST_PROXY && req.headers['x-forwarded-proto'] === 'https';
 
@@ -261,7 +311,7 @@ function securityHeaders(req, res) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
-  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('Content-Security-Policy', contentSecurityPolicy());
   if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
 }
 
@@ -275,13 +325,13 @@ function send(res, status, data) {
   res.end(body);
 }
 
-function readJson(req) {
+function readJson(req, max = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > max) {
         reject(new ValidationError('request too large'));
         req.destroy();
         return;
@@ -308,7 +358,31 @@ async function handleApi(req, res, url) {
   const parts = url.pathname.split('/').filter(Boolean); // ['api', 'bathrooms', id?, 'reviews'?]
 
   if (parts[1] === 'health') return send(res, 200, { ok: true });
-  if (parts[1] === 'auth' && parts.length === 3) return handleAuth(req, res, store, parts[2]);
+
+  // GET /api/config  (public settings the apps need to sign in with Supabase)
+  if (parts[1] === 'config' && req.method === 'GET') return send(res, 200, { auth: supabase.publicConfig() });
+
+  if (parts[1] === 'me') return handleMe(req, res, store, parts);
+
+  // GET /api/avatars/:userId
+  if (parts[1] === 'avatars' && parts.length === 3 && req.method === 'GET') {
+    const avatar = await store.getAvatar(parts[2]);
+    if (!avatar) return send(res, 404, { error: 'not found' });
+    res.writeHead(200, {
+      'Content-Type': avatar.type === 'image/png' ? 'image/png' : 'image/jpeg',
+      'Content-Length': avatar.data.length,
+      'Cache-Control': 'public, max-age=86400',
+      'Content-Security-Policy': "default-src 'none'",
+    });
+    return res.end(avatar.data);
+  }
+
+  // DELETE /api/reviews/:id  (your own review)
+  if (parts[1] === 'reviews' && parts.length === 3 && req.method === 'DELETE') {
+    const user = await requireUser(req);
+    const deleted = await store.deleteReview(parts[2], user.id);
+    return deleted ? send(res, 200, { ok: true }) : send(res, 404, { error: 'review not found' });
+  }
 
   // GET /api/places?south=&west=&north=&east=  (businesses and mapped restrooms from OpenStreetMap)
   if (parts[1] === 'places' && parts.length === 2 && req.method === 'GET') {
@@ -326,10 +400,9 @@ async function handleApi(req, res, url) {
 
   if (parts[1] !== 'bathrooms') return send(res, 404, { error: 'not found' });
 
-  let user = null;
+  let profile = null;
   if (req.method === 'POST') {
-    user = await currentUser(store, req);
-    if (!user) return send(res, 401, { error: 'Sign in to add restrooms and reviews.' });
+    ({ profile } = await requirePoster(store, req));
     if (!allowWrite(req)) return send(res, 429, { error: 'Too many submissions. Please try again in a few minutes.' });
   }
 
@@ -361,7 +434,7 @@ async function handleApi(req, res, url) {
   if (parts.length === 2 && req.method === 'POST') {
     const body = await readJson(req);
     const bathroom = validateBathroom(body);
-    const review = body.review ? validateReview(body.review, user) : null;
+    const review = body.review ? validateReview(body.review, profile) : null;
     // A place from the map that someone already rated: add the review to that restroom instead.
     const existingId = bathroom.osmId && (await store.findIdByOsmId(bathroom.osmId));
     if (existingId) {
@@ -379,7 +452,7 @@ async function handleApi(req, res, url) {
 
   // POST /api/bathrooms/:id/reviews
   if (parts.length === 4 && parts[3] === 'reviews' && req.method === 'POST') {
-    const review = await store.addReview(parts[2], validateReview(await readJson(req), user));
+    const review = await store.addReview(parts[2], validateReview(await readJson(req), profile));
     return review ? send(res, 201, review) : send(res, 404, { error: 'bathroom not found' });
   }
 
@@ -432,6 +505,7 @@ const server = http.createServer(async (req, res) => {
     serveStatic(req, res, url);
   } catch (err) {
     if (err instanceof ValidationError) return send(res, 400, { error: err.message });
+    if (err instanceof HttpError) return send(res, err.status, { error: err.message, ...(err.code && { code: err.code }) });
     console.error(err);
     if (!res.headersSent) send(res, 500, { error: 'internal error' });
   }
@@ -441,4 +515,4 @@ if (require.main === module) {
   server.listen(PORT, () => console.log(`ToiletTime running at http://localhost:${PORT}`));
 }
 
-module.exports = { server, storeReady, PLACE_TYPES };
+module.exports = { server, storeReady, PLACE_TYPES, isUuid };

@@ -17,10 +17,11 @@ echo   1  Start the app on my iPhone       (phone on the same Wi-Fi)
 echo   2  Start the app on any network     (uses the online server)
 echo   3  Update ToiletTime to the newest version
 echo   4  Install or repair                (first-time setup)
-echo   5  Sign in to Expo
-echo   6  Open the website on this PC
-echo   7  Show the commands, to type them myself
-echo   8  Put a ToiletTime shortcut on my Desktop
+echo   5  Connect accounts                 (paste your Supabase keys)
+echo   6  Sign in to Expo
+echo   7  Open the website on this PC
+echo   8  Show the commands, to type them myself
+echo   9  Put a ToiletTime shortcut on my Desktop
 echo   0  Exit
 echo.
 set "choice="
@@ -29,10 +30,11 @@ if "%choice%"=="1" goto phone
 if "%choice%"=="2" goto online
 if "%choice%"=="3" goto update
 if "%choice%"=="4" goto setup
-if "%choice%"=="5" goto expologin
-if "%choice%"=="6" goto website
-if "%choice%"=="7" goto commands
-if "%choice%"=="8" goto shortcut
+if "%choice%"=="5" goto configure
+if "%choice%"=="6" goto expologin
+if "%choice%"=="7" goto website
+if "%choice%"=="8" goto commands
+if "%choice%"=="9" goto shortcut
 if "%choice%"=="0" goto end
 goto menu
 
@@ -87,6 +89,17 @@ echo   Done.
 pause
 goto menu
 
+:configure
+cls
+echo.
+echo   Connect ToiletTime to your Supabase project (accounts, sign-in and emails).
+echo   Have your Supabase project open in your browser: Project Settings, then API Keys.
+echo   Paste each value with a right-click, then press Enter.
+echo.
+call npm run configure
+pause
+goto menu
+
 :expologin
 cls
 echo.
@@ -120,6 +133,7 @@ echo   npm run setup          Install what ToiletTime needs (first time, or afte
 echo   npm run phone          Start the app for your iPhone on the same Wi-Fi
 echo   npm run phone:online   Start the app using the online server, any network
 echo   npm run update         Download and install the newest version
+echo   npm run configure      Connect accounts by saving your Supabase keys
 echo   npm start              Start only the website, at http://localhost:3000
 echo   npm test               Run the server's automatic checks
 echo.

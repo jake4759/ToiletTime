@@ -37,6 +37,7 @@ export interface Review {
   id: string;
   userId: string | null;
   author: string;
+  authorAvatarUrl?: string | null;
   overall: number;
   cleanliness: number;
   supplies: number;
@@ -108,9 +109,19 @@ export const emptyReview = (): ReviewDraft => ({
   comment: '',
 });
 
+/** The signed-in person: their Supabase account plus their ToiletTime profile. */
 export interface User {
   id: string;
+  username: string | null;
+  avatarUrl: string | null;
+  markerColor: string | null;
   email: string;
-  name: string;
+  emailVerified: boolean;
+  provider: string;
   createdAt: string;
+}
+
+export interface MyReview extends Review {
+  restroomId: string;
+  restroomName: string;
 }

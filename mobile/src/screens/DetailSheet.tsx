@@ -1,12 +1,23 @@
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ApiError, api } from '../api';
 import { useAuth } from '../auth';
 import { ReviewFields, isReviewComplete } from '../components/ReviewFields';
-import { Button, Icon, Separator, SheetHeader, Stars, type SymbolName } from '../components/ui';
+import { Avatar, Button, Icon, Separator, SheetHeader, Stars, type SymbolName } from '../components/ui';
 import { distanceMeters, formatDistance } from '../geo';
 import { formatRating, plural, useTheme } from '../theme';
 import { AccountSheet } from './AccountSheet';
@@ -39,7 +50,7 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
   const [writing, setWriting] = useState(false);
   const [draft, setDraft] = useState(emptyReview);
   const [submitting, setSubmitting] = useState(false);
-  const { user, expire } = useAuth();
+  const { user, missing, expire } = useAuth();
   const [accountOpen, setAccountOpen] = useState(false);
   const writeAfterSignIn = useRef(false);
   const myReview = user ? detail?.reviews.find((r) => r.userId === user.id) : undefined;
@@ -60,7 +71,7 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
   };
 
   const startReview = () => {
-    if (user) return beginWriting();
+    if (user && !missing) return beginWriting();
     writeAfterSignIn.current = true;
     setAccountOpen(true);
   };
@@ -193,7 +204,29 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
             detail.reviews.map((r, i) => (
               <View key={r.id}>
                 {i > 0 && <Separator inset={0} />}
-                <ReviewItem review={r} mine={!!user && r.userId === user.id} />
+                <ReviewItem
+                  review={r}
+                  mine={!!user && r.userId === user.id}
+                  onDelete={() =>
+                    Alert.alert('Delete your review?', 'This removes your rating and comment.', [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Delete',
+                        style: 'destructive',
+                        onPress: async () => {
+                          try {
+                            await api.deleteReview(r.id);
+                            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                            await load();
+                            onChanged();
+                          } catch (e) {
+                            Alert.alert("Couldn't delete review", (e as Error).message);
+                          }
+                        },
+                      },
+                    ])
+                  }
+                />
               </View>
             ))
           )}
@@ -204,7 +237,7 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
         reason="Sign in to rate this restroom. Your review is saved to your account."
         onClose={() => setAccountOpen(false)}
         onDismiss={() => {
-          if (writeAfterSignIn.current && user) beginWriting();
+          if (writeAfterSignIn.current && user && !missing) beginWriting();
           writeAfterSignIn.current = false;
         }}
       />
@@ -266,14 +299,8 @@ function Amenity({ on, yes, no }: { on: boolean; yes: string; no: string }) {
   );
 }
 
-function ReviewItem({ review, mine }: { review: Review; mine: boolean }) {
+function ReviewItem({ review, mine, onDelete }: { review: Review; mine: boolean; onDelete: () => void }) {
   const theme = useTheme();
-  const initials = review.author
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
   const date = new Date(review.createdAt).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -282,9 +309,7 @@ function ReviewItem({ review, mine }: { review: Review; mine: boolean }) {
   return (
     <View style={styles.review}>
       <View style={styles.reviewTop}>
-        <View style={[styles.avatar, { backgroundColor: theme.brandSoft }]}>
-          <Text style={[styles.avatarText, { color: theme.brand }]}>{initials}</Text>
-        </View>
+        <Avatar url={review.authorAvatarUrl} name={review.author} size={34} />
         <View style={styles.flex}>
           <Text style={[styles.reviewAuthor, { color: theme.text }]}>
             {review.author}
@@ -298,6 +323,12 @@ function ReviewItem({ review, mine }: { review: Review; mine: boolean }) {
         Cleanliness {review.cleanliness} · Supplies {review.supplies} · Privacy {review.privacy}
       </Text>
       {!!review.comment && <Text style={[styles.reviewBody, { color: theme.textSecondary }]}>{review.comment}</Text>}
+      {mine && (
+        <Pressable onPress={onDelete} hitSlop={8} style={styles.deleteReview} accessibilityRole="button">
+          <Icon name="trash" size={14} color={theme.danger} />
+          <Text style={[styles.small, { color: theme.danger }]}>Delete my review</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -334,5 +365,6 @@ const styles = StyleSheet.create({
   reviewAuthor: { fontSize: 16, fontWeight: '600' },
   reviewBody: { fontSize: 16, lineHeight: 22 },
   writeFooter: { marginHorizontal: 16 },
+  deleteReview: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4, alignSelf: 'flex-start' },
   writingFor: { fontSize: 15, textAlign: 'center', marginBottom: 16, marginHorizontal: 32 },
 });

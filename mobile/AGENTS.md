@@ -28,6 +28,7 @@ Run lint and typecheck before declaring any task done.
 - Single-screen app: `App.tsx` is the full-screen map. Secondary views (list, restroom details, add restroom) are React Native `Modal`s with `presentationStyle="pageSheet"` in `src/screens/`, which gives native iOS sheets without a router.
 - If the app grows to multiple full screens, adopt **Expo Router** (routes in `src/app/`) rather than adding another navigation library.
 - Shared UI lives in `src/components/`, the API client in `src/api.ts`. The API server is `../server.js`; `src/api.ts` finds it on port 3000 of the dev machine unless `EXPO_PUBLIC_API_URL` is set.
+- Accounts use Supabase Auth (`src/supabase.ts`, `src/auth.tsx`). The app gets the Supabase URL and publishable key from the server's `/api/config`, keeps the session in `expo-secure-store`, and sends the access token to the server, which verifies it with Supabase. Never put the Supabase secret key in the app.
 - Only use native modules that ship in Expo Go (see `node_modules/expo/bundledNativeModules.json`), so the app can be tested on a phone without a development build.
 
 ## Building with EAS

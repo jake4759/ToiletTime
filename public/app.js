@@ -32,13 +32,9 @@ const stars = (r) =>
 
 // ---------- session ----------
 
-const TOKEN_KEY = 'toilettime.token';
-const storage = {
-  get: () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } },
-  set: (v) => { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch {} },
-};
-let token = storage.get();
-let currentUser = null;
+let sb = null; // Supabase client, once the server says sign-in is set up
+let token = null; // current Supabase access token
+let currentUser = null; // { id, username, avatarUrl, email, emailVerified, ... } from /api/me
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -47,8 +43,7 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && token && !path.startsWith('/api/auth/login')) setSession(null);
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status, code: data.code });
   return data;
 }
 
@@ -425,21 +420,43 @@ async function openDetail(id, { pan = true } = {}) {
   };
 }
 
+function avatarHtml(url, name) {
+  return url
+    ? `<span class="avatar"><img src="${esc(url)}" alt=""></span>`
+    : `<span class="avatar">${esc(initials(name || '?'))}</span>`;
+}
+
 function renderReview(r) {
-  const initials = r.author.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const mine = currentUser && r.userId === currentUser.id;
   const date = new Date(r.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   return `<li>
     <div class="review-top">
-      <span class="avatar">${esc(initials)}</span>
+      ${avatarHtml(r.authorAvatarUrl, r.author)}
       <div>
-        <div class="who">${esc(r.author)}${currentUser && r.userId === currentUser.id ? ' <span class="you">· You</span>' : ''}</div>
+        <div class="who">${esc(r.author)}${mine ? ' <span class="you">· You</span>' : ''}</div>
         <div class="when">${date}</div>
       </div>
     </div>
     <div class="review-scores rating-line">${stars(r.overall)} · Cleanliness ${r.cleanliness} · Supplies ${r.supplies} · Privacy ${r.privacy}</div>
     ${r.comment ? `<p>${esc(r.comment)}</p>` : ''}
+    ${mine ? `<div class="review-actions"><button type="button" class="btn-link delete-review" data-delete-review="${esc(r.id)}">Delete my review</button></div>` : ''}
   </li>`;
 }
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-delete-review]');
+  if (!btn) return;
+  if (!confirm('Delete your review? This removes your rating and comment.')) return;
+  try {
+    await api(`/api/reviews/${encodeURIComponent(btn.dataset.deleteReview)}`, { method: 'DELETE' });
+    toast('Review deleted.');
+    await refresh();
+    if (activeId) openDetail(activeId, { pan: false });
+    if ($('#accountDialog').open) loadMyReviews();
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 // ---------- add dialog ----------
 
@@ -590,96 +607,381 @@ $('#addForm').addEventListener('submit', async (e) => {
 
 document.querySelectorAll('[data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
 
-// ---------- accounts ----------
+// ---------- accounts (Supabase) ----------
 
 let afterSignIn = null;
-let authMode = 'signIn';
+let authEmail = '';
+let googleEnabled = false;
 
-const initials = (name) => name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+const initials = (name) =>
+  String(name).replace(/[^A-Za-z0-9 ]/g, ' ').trim().split(/\s+/).map((w) => w[0] || '').join('').slice(0, 2).toUpperCase() || '?';
 
-function setSession(session) {
-  token = session ? session.token : null;
-  currentUser = session ? session.user : null;
-  storage.set(token);
+const AUTH_ERRORS = {
+  invalid_credentials: 'Incorrect email or password.',
+  email_not_confirmed: 'Please verify your email first.',
+  user_already_exists: 'An account with this email already exists. Try signing in.',
+  email_exists: 'An account with this email already exists. Try signing in.',
+  weak_password: 'Choose a stronger password: at least 8 characters, not a common one.',
+  otp_expired: 'That code is wrong or has expired. Check the latest email or send a new code.',
+  over_email_send_rate_limit: 'Too many emails sent. Please wait a few minutes and try again.',
+  over_request_rate_limit: 'Too many attempts. Please wait a few minutes and try again.',
+  same_password: 'Your new password must be different from the old one.',
+  email_address_invalid: 'Enter a valid email address.',
+};
+
+/** Throws a friendly error if a Supabase call failed; returns its data otherwise. */
+function check({ data, error }) {
+  if (error) throw new Error(AUTH_ERRORS[error.code] || error.message || 'Something went wrong. Please try again.');
+  return data;
+}
+
+/** What still stands between this person and posting: 'signin', 'verify', 'username' or null. */
+function missingStep() {
+  if (!token) return 'signin';
+  if (currentUser && !currentUser.emailVerified) return 'verify';
+  if (currentUser && !currentUser.username) return 'username';
+  return null;
+}
+
+async function loadMe() {
+  if (!token) {
+    currentUser = null;
+  } else {
+    try {
+      currentUser = (await api('/api/me')).user;
+    } catch {
+      currentUser = null;
+    }
+  }
   renderAccountButton();
 }
 
 function renderAccountButton() {
   const btn = $('#accountBtn');
   if (currentUser) {
-    btn.innerHTML = `<span class="avatar">${esc(initials(currentUser.name))}</span><span id="accountLabel">${esc(currentUser.name.split(' ')[0])}</span>`;
-    btn.setAttribute('aria-label', `Account, signed in as ${currentUser.name}`);
+    const name = currentUser.username || currentUser.email;
+    btn.innerHTML = `${avatarHtml(currentUser.avatarUrl, name)}<span id="accountLabel">${esc(currentUser.username ? `@${currentUser.username}` : 'Profile')}</span>`;
+    btn.setAttribute('aria-label', `Profile, signed in as ${name}`);
   } else {
     btn.innerHTML = `${icon('user')}<span id="accountLabel">Sign in</span>`;
     btn.setAttribute('aria-label', 'Sign in');
   }
 }
 
-/** Runs `action` now if signed in, otherwise after the user signs in. */
+/** Runs `action` once the person is signed in, verified and has a username. */
 function requireAccount(reason, action) {
-  if (currentUser) return action();
+  const step = missingStep();
+  if (!step) return action();
+  if (!sb) return toast('Sign-in is not set up on this server yet.');
   afterSignIn = action;
-  openAuth(reason);
+  if (step === 'username') return openUsername();
+  if (step === 'verify') return openAuth('verify', { email: currentUser.email, reason: 'Verify your email to start posting.' });
+  openAuth('signIn', { reason });
 }
 
-function setAuthMode(mode) {
-  authMode = mode;
-  const signUp = mode === 'signUp';
-  $('#authTitle').textContent = signUp ? 'Create an account' : 'Sign in';
-  $('#authSubmit').textContent = signUp ? 'Create account' : 'Sign in';
-  $('#nameField').hidden = !signUp;
-  $('#authSwitchText').textContent = signUp ? 'Already have an account?' : 'New to ToiletTime?';
-  $('#authSwitch').textContent = signUp ? 'Sign in' : 'Create an account';
-  $('#authForm').password.autocomplete = signUp ? 'new-password' : 'current-password';
-  $('#authForm').password.placeholder = signUp ? 'At least 8 characters' : '';
+function continueAfterSignIn() {
+  const step = missingStep();
+  if (step === 'verify') return openAuth('verify', { email: currentUser.email });
+  if (step === 'username') return openUsername();
+  const next = afterSignIn;
+  afterSignIn = null;
+  if (next) next();
+  else if (!$('#detailView').hidden && activeId) openDetail(activeId, { pan: false });
+}
+
+// ----- the sign-in dialog
+
+const AUTH_TEXT = {
+  signIn: { title: 'Sign in', submit: 'Sign in', switchText: 'New to ToiletTime?', switchLabel: 'Create an account', switchTo: 'signUp' },
+  signUp: { title: 'Create an account', submit: 'Create account', switchText: 'Already have an account?', switchLabel: 'Sign in', switchTo: 'signIn' },
+  verify: { title: 'Check your email', submit: 'Verify', switchText: 'Wrong email?', switchLabel: 'Start over', switchTo: 'signUp' },
+  forgot: { title: 'Reset your password', submit: 'Send code', switchText: 'Remembered it?', switchLabel: 'Sign in', switchTo: 'signIn' },
+  reset: { title: 'Choose a new password', submit: 'Save new password', switchText: "Didn't get a code?", switchLabel: 'Send another', switchTo: 'forgot' },
+};
+
+function setAuthMode(mode, { reason, note } = {}) {
+  const form = $('#authForm');
+  const text = AUTH_TEXT[mode];
+  form.dataset.mode = mode;
+  $('#authTitle').textContent = text.title;
+  $('#authSubmit').textContent = text.submit;
+  $('#authSwitchText').textContent = text.switchText;
+  $('#authSwitch').textContent = text.switchLabel;
   $('#authError').textContent = '';
+  $('#socialBlock').hidden = !googleEnabled;
+  form.password.autocomplete = mode === 'signUp' ? 'new-password' : 'current-password';
+  form.password.placeholder = mode === 'signUp' ? 'At least 8 characters' : '';
+  if (authEmail) form.email.value = authEmail;
+  form.code.value = '';
+  $('#authReason').textContent =
+    reason ??
+    (mode === 'verify'
+      ? `Enter the code we sent to ${authEmail}. It can take a minute to arrive; check spam too.`
+      : mode === 'reset'
+        ? `If ${authEmail} has an account, we sent it a code. Enter it with your new password.`
+        : mode === 'forgot'
+          ? "Enter your account's email and we'll send you a code."
+          : '');
+  $('#authNote').textContent = note || '';
 }
 
-function openAuth(reason) {
+function openAuth(mode, { email, reason } = {}) {
   $('#authForm').reset();
-  setAuthMode('signIn');
-  $('#authReason').textContent = reason || 'Sign in to rate restrooms and add new ones.';
-  $('#authDialog').showModal();
+  if (email) authEmail = email;
+  setAuthMode(mode, { reason });
+  if (!$('#authDialog').open) $('#authDialog').showModal();
 }
 
-$('#authSwitch').addEventListener('click', () => setAuthMode(authMode === 'signIn' ? 'signUp' : 'signIn'));
+$('#authSwitch').addEventListener('click', () => setAuthMode(AUTH_TEXT[$('#authForm').dataset.mode].switchTo));
+$('#forgotLink').addEventListener('click', () => {
+  authEmail = $('#authForm').email.value.trim();
+  setAuthMode('forgot');
+});
+// Closing a dialog before finishing (not signed in / no username yet) cancels what was waiting.
 $('#authDialog').addEventListener('close', () => {
-  if (!currentUser) afterSignIn = null;
+  if (!token) afterSignIn = null;
+});
+$('#usernameDialog').addEventListener('close', () => {
+  if (missingStep() === 'username') afterSignIn = null;
+});
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-toggle-password]');
+  if (!btn) return;
+  const input = btn.parentElement.querySelector('input');
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
 });
 
 $('#authForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const fd = new FormData(e.target);
-  const signUp = authMode === 'signUp';
+  const form = e.target;
+  const mode = form.dataset.mode;
+  const email = form.email.value.trim() || authEmail;
+  const submit = $('#authSubmit');
+  submit.disabled = true;
+  $('#authError').textContent = '';
   try {
-    const session = await api(signUp ? '/api/auth/signup' : '/api/auth/login', {
-      method: 'POST',
-      body: { name: fd.get('name'), email: fd.get('email'), password: fd.get('password') },
-    });
-    setSession(session);
-    $('#authDialog').close();
-    toast(signUp ? `Welcome, ${session.user.name}!` : `Signed in as ${session.user.name}.`);
-    const next = afterSignIn;
-    afterSignIn = null;
-    if (next) next();
-    else if (!$('#detailView').hidden && activeId) openDetail(activeId, { pan: false });
+    if (mode === 'signIn') {
+      const { error } = await sb.auth.signInWithPassword({ email, password: form.password.value });
+      if (error?.code === 'email_not_confirmed') {
+        authEmail = email;
+        await sb.auth.resend({ type: 'signup', email });
+        return setAuthMode('verify');
+      }
+      check({ error });
+      await signedIn();
+    } else if (mode === 'signUp') {
+      if (form.password.value.length < 8) throw new Error('Use at least 8 characters for your password.');
+      const data = check(await sb.auth.signUp({ email, password: form.password.value }));
+      authEmail = email;
+      if (data.session) await signedIn();
+      else setAuthMode('verify');
+    } else if (mode === 'verify') {
+      const code = form.code.value.trim();
+      const first = await sb.auth.verifyOtp({ email: authEmail, token: code, type: 'email' });
+      if (first.error) check(await sb.auth.verifyOtp({ email: authEmail, token: code, type: 'signup' }));
+      toast('Email verified.');
+      await signedIn();
+    } else if (mode === 'forgot') {
+      check(await sb.auth.resetPasswordForEmail(email));
+      authEmail = email;
+      setAuthMode('reset');
+    } else if (mode === 'reset') {
+      if (form.newPassword.value.length < 8) throw new Error('Use at least 8 characters for your new password.');
+      check(await sb.auth.verifyOtp({ email: authEmail, token: form.code.value.trim(), type: 'recovery' }));
+      check(await sb.auth.updateUser({ password: form.newPassword.value }));
+      toast('Password updated.');
+      await signedIn();
+    }
+  } catch (err) {
+    $('#authError').textContent = err.message;
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+$('#resendLink').addEventListener('click', async () => {
+  try {
+    check(await sb.auth.resend({ type: 'signup', email: authEmail }));
+    setAuthMode('verify', { note: 'New code sent.' });
   } catch (err) {
     $('#authError').textContent = err.message;
   }
 });
 
+$('#googleBtn').addEventListener('click', async () => {
+  try {
+    check(await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }));
+  } catch (err) {
+    $('#authError').textContent = err.message;
+  }
+});
+
+async function signedIn() {
+  const { data } = await sb.auth.getSession();
+  token = data.session?.access_token ?? null;
+  await loadMe();
+  $('#authDialog').close();
+  if (currentUser?.username) toast(`Signed in as @${currentUser.username}.`);
+  continueAfterSignIn();
+}
+
+// ----- username
+
+function openUsername() {
+  $('#usernameForm').reset();
+  $('#usernameError').textContent = '';
+  $('#usernameDialog').showModal();
+}
+
+$('#usernameForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    currentUser = (await api('/api/me', { method: 'PATCH', body: { username: e.target.username.value.trim() } })).user;
+    renderAccountButton();
+    $('#usernameDialog').close();
+    toast(`Welcome, @${currentUser.username}!`);
+    continueAfterSignIn();
+  } catch (err) {
+    $('#usernameError').textContent = err.message;
+  }
+});
+
+// ----- profile
+
 $('#accountBtn').addEventListener('click', () => {
-  if (!currentUser) return openAuth();
-  $('#accountAvatar').textContent = initials(currentUser.name);
-  $('#accountName').textContent = currentUser.name;
-  $('#accountEmail').textContent = currentUser.email;
-  $('#accountSince').textContent = `Member since ${new Date(currentUser.createdAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`;
+  if (!sb) return toast('Sign-in is not set up on this server yet.');
+  const step = missingStep();
+  if (step === 'signin') return openAuth('signIn');
+  if (step === 'verify') return openAuth('verify', { email: currentUser.email });
+  if (step === 'username') return openUsername();
+  renderProfile();
+  loadMyReviews();
   $('#accountDialog').showModal();
 });
 
+function renderProfile() {
+  $('#accountAvatar').innerHTML = currentUser.avatarUrl
+    ? `<img src="${esc(currentUser.avatarUrl)}" alt="">`
+    : esc(initials(currentUser.username));
+  $('#removeAvatarBtn').hidden = !currentUser.avatarUrl;
+  $('#accountName').textContent = `@${currentUser.username}`;
+  $('#accountEmail').textContent = `${currentUser.email}${currentUser.emailVerified ? ' ✓ verified' : ''}`;
+  $('#accountSince').textContent = `Member since ${new Date(currentUser.createdAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`;
+  $('#renameForm').username.value = currentUser.username;
+  $('#accountError').textContent = '';
+}
+
+async function loadMyReviews() {
+  const list = $('#myReviews');
+  list.innerHTML = '<li class="empty">Loading…</li>';
+  try {
+    const { reviews } = await api('/api/me/reviews');
+    $('#myReviewCount').textContent = `(${reviews.length})`;
+    list.innerHTML =
+      reviews
+        .map(
+          (r) => `<li>
+            <div class="mr-main" data-open-restroom="${esc(r.restroomId)}">
+              <div class="mr-name">${esc(r.restroomName)}</div>
+              <div class="mr-meta">${stars(r.overall)} ${new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+            </div>
+            <button type="button" class="icon-btn delete-review" data-delete-review="${esc(r.id)}" aria-label="Delete review of ${esc(r.restroomName)}">${icon('trash')}</button>
+          </li>`,
+        )
+        .join('') || '<li class="empty">You haven’t reviewed any restrooms yet.</li>';
+  } catch (err) {
+    list.innerHTML = `<li class="empty">${esc(err.message)}</li>`;
+  }
+}
+
+$('#myReviews').addEventListener('click', (e) => {
+  const item = e.target.closest('[data-open-restroom]');
+  if (!item) return;
+  $('#accountDialog').close();
+  openDetail(item.dataset.openRestroom);
+});
+
+$('#renameForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    currentUser = (await api('/api/me', { method: 'PATCH', body: { username: e.target.username.value.trim() } })).user;
+    renderAccountButton();
+    renderProfile();
+    toast('Username saved.');
+  } catch (err) {
+    $('#accountError').textContent = err.message;
+  }
+});
+
+$('#passwordForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const value = e.target.newPassword.value;
+  try {
+    if (value.length < 8) throw new Error('Use at least 8 characters for your new password.');
+    check(await sb.auth.updateUser({ password: value }));
+    e.target.reset();
+    toast('Password changed.');
+  } catch (err) {
+    $('#accountError').textContent = err.message;
+  }
+});
+
+/** Shrinks a chosen photo to a 320px square JPEG (base64) before upload. */
+function squareJpeg(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const size = Math.min(img.width, img.height);
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 320;
+      canvas.getContext('2d').drawImage(img, (img.width - size) / 2, (img.height - size) / 2, size, size, 0, 0, 320, 320);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("That file isn't a picture we can use."));
+    };
+    img.src = url;
+  });
+}
+
+$('#avatarInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const image = await squareJpeg(file);
+    currentUser = (await api('/api/me/avatar', { method: 'PUT', body: { image } })).user;
+    renderAccountButton();
+    renderProfile();
+    toast('Profile picture updated.');
+    if (!$('#detailView').hidden && activeId) openDetail(activeId, { pan: false });
+  } catch (err) {
+    $('#accountError').textContent = err.message;
+  }
+});
+
+$('#removeAvatarBtn').addEventListener('click', async () => {
+  try {
+    currentUser = (await api('/api/me/avatar', { method: 'DELETE' })).user;
+    renderAccountButton();
+    renderProfile();
+    if (!$('#detailView').hidden && activeId) openDetail(activeId, { pan: false });
+  } catch (err) {
+    $('#accountError').textContent = err.message;
+  }
+});
+
 $('#signOutBtn').addEventListener('click', async () => {
-  await api('/api/auth/logout', { method: 'POST', body: {} }).catch(() => {});
-  setSession(null);
+  await sb.auth.signOut().catch(() => {});
+  token = null;
+  currentUser = null;
+  renderAccountButton();
   $('#accountDialog').close();
   toast('Signed out.');
   if (!$('#detailView').hidden && activeId) openDetail(activeId, { pan: false });
@@ -689,23 +991,51 @@ $('#deleteAccountBtn').addEventListener('click', async () => {
   const ok = confirm('Delete your account? This cannot be undone. Your reviews stay on ToiletTime without your name.');
   if (!ok) return;
   try {
-    await api('/api/auth/me', { method: 'DELETE' });
-    setSession(null);
+    await api('/api/me', { method: 'DELETE' });
+    await sb.auth.signOut({ scope: 'local' }).catch(() => {});
+    token = null;
+    currentUser = null;
+    renderAccountButton();
     $('#accountDialog').close();
     toast('Your account was deleted.');
   } catch (err) {
-    toast(err.message);
+    $('#accountError').textContent = err.message;
   }
 });
 
-async function restoreSession() {
-  if (!token) return renderAccountButton();
+/** Connects to Supabase (if the server has it set up) and restores the saved sign-in. */
+async function startAuth() {
+  renderAccountButton();
+  let config = null;
   try {
-    const { user } = await api('/api/auth/me');
-    setSession({ token, user });
+    config = (await api('/api/config')).auth;
   } catch {
-    renderAccountButton();
+    // Browsing still works without accounts.
   }
+  if (!config || !window.supabase) return;
+  sb = window.supabase.createClient(config.supabaseUrl, config.supabaseKey, {
+    auth: { flowType: 'pkce', detectSessionInUrl: true, persistSession: true, autoRefreshToken: true },
+  });
+  fetch(`${config.supabaseUrl}/auth/v1/settings`, { headers: { apikey: config.supabaseKey } })
+    .then((r) => r.json())
+    .then((s) => (googleEnabled = !!s.external?.google))
+    .catch(() => {});
+  sb.auth.onAuthStateChange((event, session) => {
+    const changed = (session?.access_token ?? null) !== token;
+    token = session?.access_token ?? null;
+    if (event === 'SIGNED_OUT') {
+      currentUser = null;
+      renderAccountButton();
+    } else if (changed && event !== 'TOKEN_REFRESHED') {
+      // Returning from Google sign-in lands here; finish any setup it still needs.
+      loadMe().then(() => {
+        if (event === 'SIGNED_IN' && missingStep() === 'username' && !$('#usernameDialog').open && !$('#authDialog').open) openUsername();
+      });
+    }
+  });
+  const { data } = await sb.auth.getSession();
+  token = data.session?.access_token ?? null;
+  await loadMe();
 }
 
 // ---------- init ----------
@@ -714,7 +1044,7 @@ async function restoreSession() {
   const options = Object.entries(TYPE_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
   $('#typeFilter').insertAdjacentHTML('beforeend', options);
   $('#addType').innerHTML = options;
-  await restoreSession();
+  await startAuth();
   try {
     await refresh();
     loadPlaces();
