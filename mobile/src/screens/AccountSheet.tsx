@@ -205,7 +205,7 @@ function SignInFlow({ reason, onClose }: { reason?: string | null; onClose: () =
     case 'signUp':
       return <SignUp email={email} onClose={onClose} go={go} />;
     case 'verify':
-      return <VerifyEmail email={email} onClose={onClose} onBack={() => go('signUp')} />;
+      return <VerifyEmail email={email} onClose={onClose} onBack={() => go('signUp')} onSignIn={() => go('signIn')} />;
     case 'forgot':
       return <ForgotPassword email={email} onClose={onClose} go={go} />;
     case 'reset':
@@ -434,11 +434,14 @@ function VerifyEmail({
   email,
   onClose,
   onBack,
+  onSignIn,
   signedIn,
 }: {
   email: string;
   onClose: () => void;
   onBack?: () => void;
+  /** For people who confirmed with the link in the email instead of the code. */
+  onSignIn?: () => void;
   signedIn?: boolean;
 }) {
   const theme = useTheme();
@@ -481,6 +484,7 @@ function VerifyEmail({
           onPress={() => cooldown.left <= 0 && resend()}
           color={cooldown.left > 0 ? theme.muted : undefined}
         />
+        {onSignIn && <LinkButton label="Confirmed with the email link? Sign in" onPress={onSignIn} />}
         {onBack && <LinkButton label="Use a different email" onPress={onBack} color={theme.textSecondary} />}
         {signedIn && <LinkButton label="Sign out" onPress={signOut} color={theme.textSecondary} />}
       </View>

@@ -802,6 +802,8 @@ $('#authForm').addEventListener('submit', async (e) => {
   }
 });
 
+$('#linkSignIn').addEventListener('click', () => setAuthMode('signIn'));
+
 $('#resendLink').addEventListener('click', async () => {
   try {
     check(await sb.auth.resend({ type: 'signup', email: authEmail }));
