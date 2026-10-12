@@ -9,8 +9,9 @@ ToiletTime has a native app for iPhone and Android (`mobile/`, built with Expo a
 - **World map.** Every rated restroom appears as a pin colored by its average rating. Your own spot is your **Flush Buddy**, a little full-body character you dress up, in a round badge in your favorite color. A circle around you shows the 200 m area where you can review, and places you can review right now get a green ✓.
 - **Places already on the map.** Zoom in and nearby restaurants, cafés, stores, gas stations, hotels, and restrooms already mapped in OpenStreetMap (including those inside theme parks, malls and stations) appear with icons. Tap one to rate its restroom; there's nothing to set up first.
 - **Add a restroom.** Search for a business to fill in its details, or touch and hold the map to place one yourself.
-- **Flush Buddy and the Closet.** Pick skin, hair, hats, glasses, tops, bottoms, shoes and something to hold. Every restroom you review moves you up a level (Newbie, First Flush, Regular, Throne Scout, Porcelain Pro, Royal Flush) and unlocks new items, from a baseball cap after your first review to the Golden Plunger at 25. The app celebrates each unlock.
+- **Flush Buddy and the Closet.** Pick skin, hair, hats, glasses, tops, bottoms, shoes, something to hold, and a pose (wave, point, thumbs up, cheer, dance, ta-da). Being the **first** to review a restroom earns Trailblazer items (a flag, then an explorer hat). Choose whether your reviews show your character or your profile picture. Every restroom you review moves you up a level (Newbie, First Flush, Regular, Throne Scout, Porcelain Pro, Royal Flush) and unlocks new items, from a baseball cap after your first review to the Golden Plunger at 25. The app celebrates each unlock.
 - **Only rate where you've been.** You can add or rate a restroom if you're within about 200 m of it, or were in the last 24 hours while the app was open. The app quietly notes which restrooms you pass while it's open; only "near this restroom at this time" is saved (not your position) and it's deleted after 48 hours.
+- **Fair ratings.** One review per person per restroom (rating again updates it, marked "edited"). Each restroom counts toward unlocks once, so deleting and re-posting earns nothing. Adding a business that's already on the map points you to the existing one. Daily limits per account, and comments that are link spam or keyboard mashing are refused.
 - **Detailed ratings.** Overall, cleanliness, supplies and privacy, with an optional written review. Rating a place again updates your earlier review.
 - **Accounts.** Sign in with email and password, Apple, or Google. Email addresses are verified with a 6-digit code, and "Forgot password?" sends a code to reset it. Anyone can browse; posting needs a verified account and a username.
 - **Profile.** Username, profile picture, your character and level, **My Reviews** (open or delete any of them), change password, sign out, and delete account.
@@ -155,10 +156,16 @@ Settings come from environment variables or a `.env` file in this folder (`npm r
 | `CONTACT_EMAIL` | none | Contact address shown in the Terms, Privacy Policy and the app's "Contact support" |
 | `VISIT_RADIUS_M` | `200` | How close (in meters, plus the phone's GPS accuracy up to 100 m) you must be to a restroom to count as being there |
 | `REVIEW_WINDOW_HOURS` | `24` | How long after being near a restroom you can still rate it. Visit records are kept for twice this, at least 48 hours; update the Privacy Policy if you change it. |
+| `DAILY_REVIEW_LIMIT` | `20` | Restrooms one account can review per day |
+| `DAILY_NEW_RESTROOM_LIMIT` | `8` | New restrooms one account can add per day |
 | `VISIT_LIMIT` | `200` | Visit updates per client every 10 minutes |
 | `HIDE_AFTER_REPORTS` | `3` | Reports from different people that hide a review automatically |
 
 For the app, run `npm run lint` and `npm run typecheck` in `mobile/`.
+
+The website draws characters with the app's drawing code. After changing `mobile/src/character/draw.ts`, run `npm run build:character` to update `public/vendor/character/draw.js`.
+
+Moderators can run `npm run moderate -- suspicious` to list accounts whose reviews all give the same 1 or 5 stars.
 
 ## API
 
@@ -179,7 +186,7 @@ Requests that need an account send the Supabase access token as `Authorization: 
 | `DELETE` | `/api/reviews/:id` | Delete one of your reviews |
 | `POST` | `/api/reviews/:id/report` | Report a review (`reason`: `spam`, `offensive`, `false`, `private` or `other`) |
 | `GET` | `/api/me` | Your profile, character, level, review count, email and verification status |
-| `PATCH` | `/api/me` | Change `username`, `markerColor` or `character` (only unlocked items) |
+| `PATCH` | `/api/me` | Change `username`, `markerColor`, `character` (only unlocked items) or `reviewIcon` (`character` or `photo`) |
 | `PUT` / `DELETE` | `/api/me/avatar` | Upload (`image`: base64 JPEG or PNG) or remove your profile picture |
 | `GET` | `/api/me/reviews` | Your reviews |
 | `DELETE` | `/api/me` | Delete your account; your reviews stay without your name |

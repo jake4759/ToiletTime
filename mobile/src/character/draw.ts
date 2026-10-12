@@ -1,7 +1,7 @@
 /**
  * Draws a ToiletTime character ("Flush Buddy") as a list of simple SVG shapes.
  * Kept free of React so the same drawing can be rendered in the app and in previews.
- * The picture is 120 wide and 182 tall (viewBox "0 -12 120 182"), facing forward.
+ * The body is drawn around x = 60; the picture is 148 wide (room for raised arms) and 182 tall.
  */
 
 export interface CharacterConfig {
@@ -16,6 +16,7 @@ export interface CharacterConfig {
   bottomColor: string;
   shoes: string;
   held: string;
+  pose: string;
   /** The circle behind the character on the map. */
   bgColor: string;
 }
@@ -32,10 +33,13 @@ export const DEFAULT_CHARACTER: CharacterConfig = {
   bottomColor: '#2563eb',
   shoes: 'sneakers',
   held: 'none',
+  pose: 'stand',
   bgColor: '#cfe8df',
 };
 
-export const VIEWBOX = '0 -12 120 182';
+export const VIEW_WIDTH = 148;
+export const VIEW_HEIGHT = 182;
+export const VIEWBOX = `-14 -12 ${VIEW_WIDTH} ${VIEW_HEIGHT}`;
 
 export type Shape = {
   t: 'circle' | 'ellipse' | 'rect' | 'path' | 'polygon' | 'line' | 'g' | 'defs' | 'linearGradient' | 'stop';
@@ -64,11 +68,31 @@ export function shade(hex: string, amount: number): string {
 const s = (t: Shape['t'], p: Shape['p'], c?: Shape[]): Shape => (c ? { t, p, c } : { t, p });
 const OUTLINE = { stroke: 'rgba(0,0,0,0.18)', strokeWidth: 1 };
 
-// Arms hang from the shoulders, tilted slightly outwards.
-const LEFT_ARM = 'rotate(10 32 86)';
-const RIGHT_ARM = 'rotate(-10 88 86)';
-const LEFT_HAND = { cx: 27, cy: 120 };
-const RIGHT_HAND = { cx: 93, cy: 120 };
+// Arms hang from the shoulders and swing by pose. Angles are degrees (SVG rotate):
+// 0 is straight down, the left arm swings out with positive angles, the right with negative ones.
+const SHOULDERS = { left: { x: 32, y: 86 }, right: { x: 88, y: 86 } };
+const ARM_LENGTH = 34;
+const POSES: Record<string, { left: number; right: number; tilt?: number }> = {
+  stand: { left: 10, right: -10 },
+  wave: { left: 10, right: -155 },
+  point: { left: 10, right: -90 },
+  thumbsup: { left: 10, right: -125 },
+  cheer: { left: 155, right: -155 },
+  dance: { left: 125, right: -45, tilt: -6 },
+  tada: { left: 115, right: -115 },
+};
+const poseOf = (c: CharacterConfig) => POSES[c.pose] ?? POSES.stand;
+
+/** Where a hand ends up for an arm angle. */
+function handAt(side: 'left' | 'right', angle: number) {
+  const a = (angle * Math.PI) / 180;
+  const s0 = SHOULDERS[side];
+  return { cx: +(s0.x - ARM_LENGTH * Math.sin(a)).toFixed(1), cy: +(s0.y + ARM_LENGTH * Math.cos(a)).toFixed(1) };
+}
+const hands0 = (c: CharacterConfig) => {
+  const pose = poseOf(c);
+  return { left: handAt('left', pose.left), right: handAt('right', pose.right) };
+};
 
 function defs(): Shape {
   return s('defs', {}, [
@@ -212,9 +236,10 @@ function arms(c: CharacterConfig): Shape[] {
     c.top === 'tux' ? '#1f2937' : c.top === 'overalls' ? '#f8fafc' : c.top === 'stripes' ? c.topColor : c.topColor;
   const longSleeves = c.top === 'hoodie' || c.top === 'tux' || c.top === 'hero';
   const out: Shape[] = [];
+  const pose = poseOf(c);
   for (const [x, transform] of [
-    [26, LEFT_ARM],
-    [81, RIGHT_ARM],
+    [26, `rotate(${pose.left} ${SHOULDERS.left.x} ${SHOULDERS.left.y})`],
+    [81, `rotate(${pose.right} ${SHOULDERS.right.x} ${SHOULDERS.right.y})`],
   ] as const) {
     out.push(s('g', { transform }, [
       s('rect', { x, y: 84, width: 13, height: 34, rx: 6.5, fill: skin, ...OUTLINE }),
@@ -228,16 +253,53 @@ function arms(c: CharacterConfig): Shape[] {
 function hands(c: CharacterConfig): Shape[] {
   const skin = SKIN[c.skin] ?? SKIN.skin2;
   const glove = c.top === 'hero' ? '#facc15' : skin;
-  return [
-    s('circle', { ...LEFT_HAND, r: 6.5, fill: glove, ...OUTLINE }),
-    s('circle', { ...RIGHT_HAND, r: 6.5, fill: glove, ...OUTLINE }),
-  ];
+  const { left, right } = hands0(c);
+  const out = [s('circle', { ...left, r: 6.5, fill: glove, ...OUTLINE }), s('circle', { ...right, r: 6.5, fill: glove, ...OUTLINE })];
+  if (c.pose === 'thumbsup') {
+    out.push(s('rect', { x: right.cx - 2.6, y: right.cy - 14, width: 5.2, height: 11, rx: 2.6, fill: glove, ...OUTLINE }));
+  }
+  if (c.pose === 'point') {
+    out.push(s('rect', { x: right.cx + 3, y: right.cy - 2, width: 9, height: 4, rx: 2, fill: glove, ...OUTLINE }));
+  }
+  return out;
+}
+
+/** Little extras that go with a pose: wave lines, music notes, sparkles. */
+function poseEffects(c: CharacterConfig): Shape[] {
+  const { left, right } = hands0(c);
+  const ink = { stroke: '#64748b', strokeWidth: 1.8, fill: 'none', strokeLinecap: 'round' };
+  switch (c.pose) {
+    case 'wave':
+      return [
+        s('path', { d: `M${right.cx + 9} ${right.cy - 6} q4 6 0 12`, ...ink }),
+        s('path', { d: `M${right.cx + 14} ${right.cy - 9} q6 9 0 18`, ...ink }),
+      ];
+    case 'dance': {
+      const note = (x: number, y: number) => [
+        s('ellipse', { cx: x, cy: y, rx: 3.2, ry: 2.4, fill: '#7c3aed' }),
+        s('path', { d: `M${x + 2.8} ${y} V${y - 10} l5 2`, stroke: '#7c3aed', strokeWidth: 1.6, fill: 'none' }),
+      ];
+      return [...note(16, 40), ...note(102, 30)];
+    }
+    case 'tada':
+    case 'cheer':
+      return [left, right].flatMap(({ cx, cy }) =>
+        [[-9, -8], [8, -10], [0, -14]].map(([dx, dy]) =>
+          s('path', {
+            d: `M${cx + dx} ${cy + dy - 3} l1 2 l2 1 l-2 1 l-1 2 l-1 -2 l-2 -1 l2 -1 Z`,
+            fill: '#f5b301',
+          }),
+        ),
+      );
+    default:
+      return [];
+  }
 }
 
 // ---------- held item (right hand) ----------
 
 function held(c: CharacterConfig): Shape[] {
-  const { cx, cy } = RIGHT_HAND;
+  const { cx, cy } = hands0(c).right;
   switch (c.held) {
     case 'tp':
       return [
@@ -272,6 +334,16 @@ function held(c: CharacterConfig): Shape[] {
         s('path', { d: `M${cx + 4} ${cy - 21} V${cy + 1} M${cx + 14} ${cy - 18} V${cy + 4}`, stroke: '#d6b25e', strokeWidth: 1 }),
         s('path', { d: `M${cx + 9} ${cy - 3} c-3 -4 -5 -6 -5 -8 a5 5 0 0 1 10 0 c0 2 -2 4 -5 8z`, fill: '#dc2626' }),
         s('circle', { cx: cx + 9, cy: cy - 11, r: 1.6, fill: '#ffffff' }),
+      ];
+    case 'flag':
+      return [
+        s('rect', { x: cx - 1.5, y: cy - 44, width: 3, height: 54, rx: 1.5, fill: '#8b5a2b' }),
+        s('path', { d: `M${cx + 1.5} ${cy - 43} L${cx + 26} ${cy - 35} L${cx + 1.5} ${cy - 27} Z`, fill: '#16a34a', ...OUTLINE }),
+        s('path', {
+          d: `M${cx + 10} ${cy - 38.5} l1.2 2.4 l2.6 .4 l-1.9 1.8 l.5 2.6 l-2.4 -1.3 l-2.4 1.3 l.5 -2.6 l-1.9 -1.8 l2.6 -.4 Z`,
+          fill: '#fde68a',
+        }),
+        s('circle', { cx, cy: cy - 45, r: 2.5, fill: '#f5c542' }),
       ];
     default:
       return [];
@@ -406,6 +478,13 @@ function hat(c: CharacterConfig): Shape[] {
         s('circle', { cx: 47, cy: 29, r: 2.2, fill: '#2563eb' }),
         s('circle', { cx: 73, cy: 29, r: 2.2, fill: '#16a34a' }),
       ];
+    case 'explorer':
+      return [
+        s('path', { d: 'M33 38 C32 6 88 6 87 38 Z', fill: '#d6c49a', ...OUTLINE }),
+        s('rect', { x: 33, y: 30, width: 54, height: 6, fill: '#7c5a2e' }),
+        s('ellipse', { cx: 60, cy: 38, rx: 34, ry: 6, fill: '#c9b483', ...OUTLINE }),
+        s('path', { d: 'M48 12 Q60 6 72 12', stroke: '#ebe0c2', strokeWidth: 2, fill: 'none', strokeLinecap: 'round' }),
+      ];
     case 'tpcrown':
       return [36, 60, 84].flatMap((cx, i) => {
         const top = i === 1 ? 2 : 10;
@@ -424,9 +503,7 @@ function hat(c: CharacterConfig): Shape[] {
 /** All the shapes for a character, back to front. */
 export function drawCharacter(config: Partial<CharacterConfig> | null | undefined): Shape[] {
   const c: CharacterConfig = { ...DEFAULT_CHARACTER, ...(config ?? {}) };
-  return [
-    defs(),
-    s('ellipse', { cx: 60, cy: 160, rx: 30, ry: 5, fill: '#000000', opacity: 0.12 }), // ground shadow
+  const body = [
     ...back(c),
     ...legs(c),
     ...shoes(c),
@@ -438,6 +515,13 @@ export function drawCharacter(config: Partial<CharacterConfig> | null | undefine
     ...glasses(c),
     ...hairFront(c),
     ...hat(c),
+    ...poseEffects(c),
+  ];
+  const tilt = poseOf(c).tilt;
+  return [
+    defs(),
+    s('ellipse', { cx: 60, cy: 160, rx: 30, ry: 5, fill: '#000000', opacity: 0.12 }), // ground shadow
+    ...(tilt ? [s('g', { transform: `rotate(${tilt} 60 158)` }, body)] : body),
   ];
 }
 
@@ -451,6 +535,6 @@ export function characterSvg(config: Partial<CharacterConfig> | null | undefined
       .join(' ');
     return sh.c ? `<${tag} ${props}>${sh.c.map(render).join('')}</${tag}>` : `<${tag} ${props}/>`;
   };
-  const width = Math.round((height * 120) / 182);
+  const width = Math.round((height * VIEW_WIDTH) / VIEW_HEIGHT);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${VIEWBOX}" width="${width}" height="${height}">${drawCharacter(config).map(render).join('')}</svg>`;
 }

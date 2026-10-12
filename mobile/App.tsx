@@ -428,6 +428,13 @@ function MapScreen() {
       <AddSheet
         request={addRequest}
         onClose={() => setAddRequest(null)}
+        onOpenExisting={(id) => {
+          setAddRequest(null);
+          setTimeout(() => {
+            selectRestroom(id);
+            setDetailId(id);
+          }, 500);
+        }}
         onCreated={(created) => {
           setAddRequest(null);
           // Let the sheet slide away before celebrating.
@@ -591,7 +598,7 @@ function PlaceCard({
           {[PLACE_TYPES[place.type], distance].filter(Boolean).join(' · ')}
         </Text>
         <Text style={[styles.previewSub, { color: theme.textSecondary }]} numberOfLines={1}>
-          {facts ? `Not rated yet · ${facts}` : 'Not rated yet'}
+          {facts ? `Not rated yet · ${facts}` : 'Not rated yet · Be the first! 🚩'}
         </Text>
         <ReviewStatus reviewable={reviewable} radius={radius} />
         <Text style={[styles.credit, { color: theme.muted }]}>Place data © OpenStreetMap contributors</Text>

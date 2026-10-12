@@ -23,16 +23,18 @@ export function useRewards() {
       const goal = next
         ? `Review ${plural(next.at - rewards.reviewCount, 'more restroom')} to unlock ${next.items[0].name}.`
         : '';
-      if (!rewards.newItems.length && !rewards.levelUp) return;
+      if (!rewards.newItems.length && !rewards.levelUp && !rewards.firstReview) return;
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       const items = rewards.newItems.map((i) => i.name);
       const lines = [
+        rewards.firstReview ? 'You’re the first person to review this restroom. Trailblazer! 🚩' : null,
         rewards.levelUp ? `You're now a ${rewards.level.name}!` : null,
         items.length ? `New in your closet: ${items.join(', ')}.` : null,
         goal || null,
       ].filter(Boolean);
-      Alert.alert(items.length ? 'You unlocked something! 🎉' : 'Level up! 🎉', lines.join('\n\n'), [
+      const title = items.length ? 'You unlocked something! 🎉' : rewards.levelUp ? 'Level up! 🎉' : 'First review! 🚩';
+      Alert.alert(title, lines.join('\n\n'), [
         { text: 'Later', style: 'cancel' },
         ...(items.length ? [{ text: 'Open Closet', onPress: () => setClosetOpen(true) }] : []),
       ]);

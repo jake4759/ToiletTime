@@ -34,6 +34,8 @@ interface Props {
   request: AddRequest | null;
   onClose: () => void;
   onCreated: (restroom: RestroomDetail & { rewards?: Rewards }) => void;
+  /** The restroom is already on the map: open that one instead. */
+  onOpenExisting: (restroomId: string) => void;
 }
 
 type Details = ReturnType<typeof blankDetails>;
@@ -49,7 +51,7 @@ const blankDetails = () => ({
   babyChanging: false,
 });
 
-export function AddSheet({ request, onClose, onCreated }: Props) {
+export function AddSheet({ request, onClose, onCreated, onOpenExisting }: Props) {
   // A fresh form for every request; keep the last one rendered while the sheet animates closed.
   const [shown, setShown] = useState(request);
   if (request && request !== shown) setShown(request);
@@ -62,6 +64,7 @@ export function AddSheet({ request, onClose, onCreated }: Props) {
           request={shown}
           onClose={onClose}
           onCreated={onCreated}
+          onOpenExisting={onOpenExisting}
         />
       )}
     </Modal>
@@ -79,7 +82,7 @@ const detailsFromPlace = (p: Place) => ({
   babyChanging: p.babyChanging,
 });
 
-function AddForm({ request, onClose, onCreated }: Omit<Props, 'request'> & { request: AddRequest }) {
+function AddForm({ request, onClose, onCreated, onOpenExisting }: Omit<Props, 'request'> & { request: AddRequest }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
@@ -176,6 +179,14 @@ function AddForm({ request, onClose, onCreated }: Omit<Props, 'request'> & { req
       }
       if (e instanceof ApiError && e.code === 'not_visited') {
         Alert.alert('Were you here?', e.message);
+        return;
+      }
+      if (e instanceof ApiError && e.code === 'duplicate' && e.existingId) {
+        const existingId = e.existingId;
+        Alert.alert('Already on the map', e.message, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open It', onPress: () => onOpenExisting(existingId) },
+        ]);
         return;
       }
       Alert.alert("Couldn't add restroom", (e as Error).message);

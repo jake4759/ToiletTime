@@ -2,7 +2,7 @@ import { memo, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Svg, { Circle, Defs, Ellipse, G, Line, LinearGradient, Path, Polygon, Rect, Stop } from 'react-native-svg';
 
-import { DEFAULT_CHARACTER, drawCharacter, VIEWBOX, type CharacterConfig, type Shape } from './draw';
+import { DEFAULT_CHARACTER, drawCharacter, VIEW_HEIGHT, VIEW_WIDTH, VIEWBOX, type CharacterConfig, type Shape } from './draw';
 
 const COMPONENTS: Record<Shape['t'], any> = {
   circle: Circle,
@@ -35,7 +35,7 @@ export const Character = memo(function Character({
   height: number;
 }) {
   return (
-    <Svg width={(height * 120) / 182} height={height} viewBox={VIEWBOX}>
+    <Svg width={(height * VIEW_WIDTH) / VIEW_HEIGHT} height={height} viewBox={VIEWBOX}>
       {drawCharacter(character).map(render)}
     </Svg>
   );

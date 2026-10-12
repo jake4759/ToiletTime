@@ -63,6 +63,7 @@ const ANDROID_ICONS: Partial<Record<SymbolName, AndroidName>> = {
   'tshirt.fill': 'checkroom',
   'gift.fill': 'redeem',
   sparkles: 'auto_awesome',
+  'flag.fill': 'flag',
 };
 type AndroidName = Extract<Exclude<SymbolViewProps['name'], string>['android'], string>;
 

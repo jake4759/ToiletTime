@@ -21,6 +21,7 @@ import { Avatar, Button, Icon, Separator, SheetHeader, Stars, type SymbolName } 
 import { distanceMeters, formatDistance } from '../geo';
 import { formatRating, plural, useTheme } from '../theme';
 import { AccountSheet } from './AccountSheet';
+import { CharacterBadge } from '../character/Character';
 import { useRewards } from '../character/rewards';
 import { currentHere } from '../visits';
 import { chooseOption, chooseReportReason, useBlocked } from '../safety';
@@ -374,13 +375,20 @@ function ReviewItem({
   return (
     <View style={styles.review}>
       <View style={styles.reviewTop}>
-        <Avatar url={review.authorAvatarUrl} name={review.author} size={34} />
+        {review.authorCharacter ? (
+          <CharacterBadge character={review.authorCharacter} size={34} border={0} />
+        ) : (
+          <Avatar url={review.authorAvatarUrl} name={review.author} size={34} />
+        )}
         <View style={styles.flex}>
           <Text style={[styles.reviewAuthor, { color: theme.text }]}>
             {review.author}
             {mine && <Text style={{ color: theme.brand }}> · You</Text>}
           </Text>
-          <Text style={[styles.small, { color: theme.muted }]}>{date}</Text>
+          <Text style={[styles.small, { color: theme.muted }]}>
+            {date}
+            {review.editedAt ? ' · edited' : ''}
+          </Text>
         </View>
         <Stars value={review.overall} />
         {!mine && (

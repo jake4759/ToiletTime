@@ -20,7 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { api } from '../api';
 import { useAuth } from '../auth';
-import { Avatar, Button, Field, Icon, PasswordField, Section, Separator, SheetHeader, Stars } from '../components/ui';
+import { Avatar, Button, Chip, Field, Icon, PasswordField, Section, Separator, SheetHeader, Stars } from '../components/ui';
 import { ClosetSheet, LevelProgress } from '../character/ClosetSheet';
 import { CharacterBadge } from '../character/Character';
 import { useTheme } from '../theme';
@@ -798,6 +798,7 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
       ],
     );
 
+  const reviewIcon = user.reviewIcon ?? (user.avatarUrl ? 'photo' : 'character');
   const since = new Date(user.createdAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   const color = user.markerColor ?? CHARACTER_COLORS[0];
 
@@ -875,6 +876,26 @@ function Profile({ onClose, onOpenRestroom }: { onClose: () => void; onOpenRestr
           </Pressable>
           <Separator />
           <Row label="Open Closet" action="Customize" onPress={() => setClosetOpen(true)} />
+          <Separator />
+          <View style={styles.row}>
+            <Text style={[styles.rowText, styles.flex, { color: theme.text }]}>On my reviews, show</Text>
+            <View style={styles.choice}>
+              {(['character', 'photo'] as const).map((icon) => (
+                <Chip
+                  key={icon}
+                  label={icon === 'character' ? 'Character' : 'Photo'}
+                  selected={reviewIcon === icon}
+                  onPress={() => {
+                    if (icon === 'photo' && !user.avatarUrl) {
+                      Alert.alert('Add a profile picture first', 'Tap your picture at the top to choose one.');
+                      return;
+                    }
+                    run(() => auth.updateProfile({ reviewIcon: icon }));
+                  }}
+                />
+              ))}
+            </View>
+          </View>
         </Section>
         <ClosetSheet visible={closetOpen} onClose={() => setClosetOpen(false)} />
 
@@ -1108,6 +1129,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
+  choice: { flexDirection: 'row', gap: 6, paddingVertical: 8 },
   buddy: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, minHeight: 46 },
   rowText: { fontSize: 17 },

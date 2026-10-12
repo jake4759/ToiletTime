@@ -62,7 +62,13 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status, code: data.code });
+  if (!res.ok) {
+    throw Object.assign(new Error(data.error || `Request failed (${res.status})`), {
+      status: res.status,
+      code: data.code,
+      existingId: data.existingId,
+    });
+  }
   return data;
 }
 
@@ -90,7 +96,9 @@ function currentHere() {
 /** A short note about what a review earned, if anything. */
 function rewardText(rewards) {
   if (!rewards) return '';
+  const first = rewards.firstReview ? ' First to review it, Trailblazer! 🚩' : '';
   const items = rewards.newItems.map((i) => i.name);
+  if (first) return first + (items.length ? ` Unlocked: ${items.join(', ')}!` : '');
   if (items.length) return ` Unlocked: ${items.join(', ')}! Dress up your character in the ToiletTime app.`;
   if (rewards.levelUp) return ` You're now a ${rewards.level.name}!`;
   return '';
@@ -483,15 +491,27 @@ function avatarHtml(url, name) {
     : `<span class="avatar">${esc(initials(name || '?'))}</span>`;
 }
 
+/** A review author's character in a round badge (falls back to their picture until the drawing code loads). */
+function characterHtml(character, name) {
+  if (!window.characterSvg) return avatarHtml(null, name);
+  // Only pass through values that look like item ids and colors.
+  const safe = {};
+  for (const [k, v] of Object.entries(character || {})) {
+    if (typeof v === 'string' && (/^[a-z0-9]{1,20}$/.test(v) || /^#[0-9a-f]{6}$/i.test(v))) safe[k] = v;
+  }
+  const bg = safe.bgColor || '#cfe8df';
+  return `<span class="avatar character-badge" style="background:${bg}">${window.characterSvg(safe, 29)}</span>`;
+}
+
 function renderReview(r) {
   const mine = currentUser && r.userId === currentUser.id;
   const date = new Date(r.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   return `<li>
     <div class="review-top">
-      ${avatarHtml(r.authorAvatarUrl, r.author)}
+      ${r.authorCharacter ? characterHtml(r.authorCharacter, r.author) : avatarHtml(r.authorAvatarUrl, r.author)}
       <div>
         <div class="who">${esc(r.author)}${mine ? ' <span class="you">· You</span>' : ''}</div>
-        <div class="when">${date}</div>
+        <div class="when">${date}${r.editedAt ? ' · edited' : ''}</div>
       </div>
     </div>
     <div class="review-scores rating-line">${stars(r.overall)} · Cleanliness ${r.cleanliness} · Supplies ${r.supplies} · Privacy ${r.privacy}</div>
@@ -705,6 +725,12 @@ $('#addForm').addEventListener('submit', async (e) => {
     await openDetail(created.id);
     toast('Restroom added.' + rewardText(created.rewards));
   } catch (err) {
+    if (err.code === 'duplicate' && err.existingId) {
+      $('#addDialog').close();
+      await openDetail(err.existingId);
+      toast(err.message);
+      return;
+    }
     $('#addError').textContent = errorText(err);
   }
 });

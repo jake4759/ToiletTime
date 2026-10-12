@@ -40,6 +40,10 @@ export interface Review {
   userId: string | null;
   author: string;
   authorAvatarUrl?: string | null;
+  /** The author's character, when they show it on reviews instead of their picture. */
+  authorCharacter?: Partial<CharacterConfig> | null;
+  /** When the author last changed the review, if they did. */
+  editedAt?: string | null;
   /** Hidden after several people reported it (only shown to its author). */
   hidden?: boolean;
   overall: number;
@@ -124,7 +128,11 @@ export interface User {
   provider: string;
   createdAt: string;
   character: CharacterConfig;
+  /** What shows next to your reviews (null: your character unless you have a picture). */
+  reviewIcon: 'character' | 'photo' | null;
   reviewCount: number;
+  /** Restrooms you were the first to review (for Trailblazer items). */
+  firstCount: number;
   level: Level;
   nextUnlock: NextUnlock | null;
 }
@@ -151,6 +159,9 @@ export interface Rewards {
   level: Level;
   nextUnlock: NextUnlock | null;
   levelUp: boolean;
+  /** You were the first person to review this restroom. */
+  firstReview: boolean;
+  firstCount: number;
   newItems: UnlockedItem[];
 }
 
@@ -165,6 +176,8 @@ export interface ClosetItem {
   id: string;
   name: string;
   unlock: number;
+  /** Trailblazer items: how many restrooms you must be the first to review. */
+  firsts?: number;
 }
 
 export interface ClosetSlot {

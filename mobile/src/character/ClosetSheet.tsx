@@ -117,8 +117,20 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
     }
   };
 
+  const isLocked = (item: ClosetItem) => item.unlock > user.reviewCount || (item.firsts ?? 0) > user.firstCount;
+
   const pick = (item: ClosetItem) => {
-    if (item.unlock > user.reviewCount) {
+    if (item.firsts && item.firsts > user.firstCount) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      Alert.alert(
+        `${item.name} is a Trailblazer item`,
+        `Be the first person to review ${plural(item.firsts, 'restroom')} to unlock it` +
+          (user.firstCount ? ` (you've been first ${user.firstCount} so far).` : '.') +
+          '\n\nLook for places on the map that say “Not rated yet”.',
+      );
+      return;
+    }
+    if (isLocked(item)) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       const toGo = item.unlock - user.reviewCount;
       Alert.alert(
@@ -210,7 +222,7 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
             )}
             <View style={styles.grid}>
               {current?.items.map((item) => {
-                const locked = item.unlock > user.reviewCount;
+                const locked = isLocked(item);
                 const selected = draft[slot as keyof CharacterConfig] === item.id;
                 return (
                   <Pressable
@@ -241,8 +253,8 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
                     </Text>
                     {locked ? (
                       <View style={[styles.lock, { backgroundColor: theme.text }]}>
-                        <Icon name="lock.fill" size={10} color={theme.background} />
-                        <Text style={[styles.lockText, { color: theme.background }]}>{item.unlock}</Text>
+                        <Icon name={item.firsts ? 'flag.fill' : 'lock.fill'} size={10} color={theme.background} />
+                        <Text style={[styles.lockText, { color: theme.background }]}>{item.firsts || item.unlock}</Text>
                       </View>
                     ) : (
                       selected && (
@@ -256,8 +268,9 @@ function Closet({ user, onClose }: { user: User; onClose: () => void }) {
               })}
             </View>
             <Text style={[styles.footer, { color: theme.muted }]}>
-              Unlock new hats, outfits and extras by rating restrooms you’ve visited. The number on a lock is how many
-              restrooms you need to have reviewed.
+              Unlock new hats, outfits, poses and extras by rating restrooms you’ve visited. The number on a lock is how
+              many restrooms you need to have reviewed. Items with a flag are for Trailblazers: be the first to review
+              that many restrooms.
             </Text>
           </>
         )}

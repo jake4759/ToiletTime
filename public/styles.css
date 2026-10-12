@@ -427,3 +427,4 @@ legend { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-sp
   .grid-2 { grid-template-columns: 1fr; }
 }
 .visit-note { font-size: 13px; margin: 8px 0 0; }
+.character-badge { overflow: hidden; align-items: end; }

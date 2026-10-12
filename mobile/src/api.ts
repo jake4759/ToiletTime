@@ -34,8 +34,10 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    /** Why posting was refused: 'signin', 'unverified', 'username' or 'not_visited'. */
+    /** Why posting was refused: 'signin', 'unverified', 'username', 'not_visited', 'duplicate' or 'daily_limit'. */
     readonly code?: string,
+    /** For 'duplicate': the restroom that's already on the map. */
+    readonly existingId?: string,
   ) {
     super(message);
   }
@@ -65,7 +67,7 @@ async function request<T>(path: string, options: { method?: string; body?: unkno
     throw new ApiError("Can't reach the ToiletTime server. Check your internet connection.", 0);
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status, data.code);
+  if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status, data.code, data.existingId);
   return data as T;
 }
 
@@ -98,7 +100,12 @@ export const api = {
   reportReview: (id: string, reason: string) =>
     request<{ ok: true; hidden: boolean }>(`/api/reviews/${encodeURIComponent(id)}/report`, { body: { reason } }),
   me: () => request<{ user: User }>('/api/me').then((d) => d.user),
-  updateMe: (fields: { username?: string; markerColor?: string | null; character?: CharacterConfig }) =>
+  updateMe: (fields: {
+    username?: string;
+    markerColor?: string | null;
+    character?: CharacterConfig;
+    reviewIcon?: 'character' | 'photo';
+  }) =>
     request<{ user: User }>('/api/me', { method: 'PATCH', body: fields }).then((d) => d.user),
   setAvatar: (imageBase64: string) =>
     request<{ user: User }>('/api/me/avatar', { method: 'PUT', body: { image: imageBase64 } }).then((d) => d.user),
