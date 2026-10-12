@@ -1,13 +1,13 @@
-// ToiletTime — a tiny zero-dependency server for rating bathrooms worldwide.
+// ToiletTime — a small server for rating restrooms worldwide.
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const { createStore } = require('./store');
+
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'data', 'db.json');
-const SEED_FILE = path.join(__dirname, 'data', 'seed.json');
 const MAX_BODY = 32 * 1024;
 
 const PLACE_TYPES = ['restaurant', 'cafe', 'store', 'mall', 'gas_station', 'hotel', 'bar', 'public', 'other'];
@@ -22,57 +22,44 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-// ---------- storage ----------
+// ---------- storage & limits ----------
 
-function loadDb() {
-  for (const file of [DB_FILE, SEED_FILE]) {
-    try {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
-    } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
-    }
-  }
-  return { bathrooms: [] };
+if (process.env.RENDER && !process.env.DATABASE_URL) {
+  console.warn('DATABASE_URL is not set: ratings are kept in a local file and will be lost when the server restarts.');
 }
 
-let db = loadDb();
+const storeReady = createStore();
+storeReady.catch((err) => {
+  console.error('Failed to open storage:', err);
+  process.exit(1);
+});
 
-function saveDb() {
-  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-  const tmp = `${DB_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-  fs.renameSync(tmp, DB_FILE);
+// Simple per-client limit on writes, so one client can't flood the public server.
+const WRITE_LIMIT = Number(process.env.WRITE_LIMIT) || 30;
+const WRITE_WINDOW_MS = 10 * 60 * 1000;
+const writes = new Map();
+
+function clientIp(req) {
+  const forwarded = process.env.TRUST_PROXY && req.headers['x-forwarded-for'];
+  return (forwarded ? forwarded.split(',')[0] : req.socket.remoteAddress || '').trim();
 }
 
-// ---------- helpers ----------
-
-function summarize(b) {
-  const n = b.reviews.length;
-  const avg = (key) => (n ? round1(b.reviews.reduce((s, r) => s + r[key], 0) / n) : null);
-  return {
-    id: b.id,
-    name: b.name,
-    type: b.type,
-    address: b.address,
-    city: b.city,
-    country: b.country,
-    lat: b.lat,
-    lng: b.lng,
-    accessible: b.accessible,
-    free: b.free,
-    babyChanging: b.babyChanging,
-    createdAt: b.createdAt,
-    reviewCount: n,
-    rating: avg('overall'),
-    cleanliness: avg('cleanliness'),
-    supplies: avg('supplies'),
-    privacy: avg('privacy'),
-  };
+function allowWrite(req) {
+  const now = Date.now();
+  const ip = clientIp(req);
+  const recent = (writes.get(ip) || []).filter((t) => now - t < WRITE_WINDOW_MS);
+  if (recent.length >= WRITE_LIMIT) return false;
+  recent.push(now);
+  writes.set(ip, recent);
+  return true;
 }
 
-function round1(x) {
-  return Math.round(x * 10) / 10;
-}
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, times] of writes) if (times.every((t) => now - t >= WRITE_WINDOW_MS)) writes.delete(ip);
+}, WRITE_WINDOW_MS).unref();
+
+// ---------- validation ----------
 
 function str(v, max, required = false) {
   if (v === undefined || v === null || v === '') {
@@ -128,7 +115,6 @@ function validateBathroom(body) {
     free: body.free === undefined ? true : Boolean(body.free),
     babyChanging: Boolean(body.babyChanging),
     createdAt: new Date().toISOString(),
-    reviews: [],
   };
 }
 
@@ -167,9 +153,14 @@ function readJson(req) {
 // ---------- API ----------
 
 async function handleApi(req, res, url) {
+  const store = await storeReady;
   const parts = url.pathname.split('/').filter(Boolean); // ['api', 'bathrooms', id?, 'reviews'?]
 
+  if (parts[1] === 'health') return send(res, 200, { ok: true });
   if (parts[1] !== 'bathrooms') return send(res, 404, { error: 'not found' });
+  if (req.method === 'POST' && !allowWrite(req)) {
+    return send(res, 429, { error: 'Too many submissions. Please try again in a few minutes.' });
+  }
 
   // GET /api/bathrooms?q=&type=&minRating=&sort=
   if (parts.length === 2 && req.method === 'GET') {
@@ -178,7 +169,7 @@ async function handleApi(req, res, url) {
     const minRating = Number(url.searchParams.get('minRating')) || 0;
     const sort = url.searchParams.get('sort') || 'rating';
 
-    let list = db.bathrooms.map(summarize).filter((b) => {
+    let list = (await store.list()).filter((b) => {
       if (type && b.type !== type) return false;
       if (minRating && (b.rating ?? 0) < minRating) return false;
       if (q && ![b.name, b.address, b.city, b.country].join(' ').toLowerCase().includes(q)) return false;
@@ -199,27 +190,20 @@ async function handleApi(req, res, url) {
   if (parts.length === 2 && req.method === 'POST') {
     const body = await readJson(req);
     const bathroom = validateBathroom(body);
-    if (body.review) bathroom.reviews.push(validateReview(body.review));
-    db.bathrooms.push(bathroom);
-    saveDb();
-    return send(res, 201, { ...summarize(bathroom), reviews: bathroom.reviews });
+    const review = body.review ? validateReview(body.review) : null;
+    return send(res, 201, await store.addRestroom(bathroom, review));
   }
-
-  const bathroom = db.bathrooms.find((b) => b.id === parts[2]);
-  if (!bathroom) return send(res, 404, { error: 'bathroom not found' });
 
   // GET /api/bathrooms/:id
   if (parts.length === 3 && req.method === 'GET') {
-    const reviews = [...bathroom.reviews].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return send(res, 200, { ...summarize(bathroom), reviews });
+    const bathroom = await store.get(parts[2]);
+    return bathroom ? send(res, 200, bathroom) : send(res, 404, { error: 'bathroom not found' });
   }
 
   // POST /api/bathrooms/:id/reviews
   if (parts.length === 4 && parts[3] === 'reviews' && req.method === 'POST') {
-    const review = validateReview(await readJson(req));
-    bathroom.reviews.push(review);
-    saveDb();
-    return send(res, 201, review);
+    const review = await store.addReview(parts[2], validateReview(await readJson(req)));
+    return review ? send(res, 201, review) : send(res, 404, { error: 'bathroom not found' });
   }
 
   return send(res, 405, { error: 'method not allowed' });
@@ -261,7 +245,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
-  server.listen(PORT, () => console.log(`🚽 ToiletTime running at http://localhost:${PORT}`));
+  server.listen(PORT, () => console.log(`ToiletTime running at http://localhost:${PORT}`));
 }
 
-module.exports = { server, PLACE_TYPES };
+module.exports = { server, storeReady, PLACE_TYPES };

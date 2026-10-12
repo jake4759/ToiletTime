@@ -4,12 +4,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-process.env.DB_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'toilettime-')), 'db.json');
-const { server } = require('../server');
+if (!process.env.DATABASE_URL) process.env.DB_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'toilettime-')), 'db.json');
+const { server, storeReady } = require('../server');
 
 let base;
 before(() => new Promise((r) => server.listen(0, () => { base = `http://localhost:${server.address().port}`; r(); })));
-after(() => new Promise((r) => server.close(r)));
+after(async () => {
+  await new Promise((r) => server.close(r));
+  await (await storeReady).close();
+});
 
 const post = (p, body) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const stars = { overall: 4, cleanliness: 5, supplies: 3, privacy: 4 };
@@ -21,7 +24,8 @@ test('lists seeded bathrooms', async () => {
 });
 
 test('adds a bathroom with a first review, then another review', async () => {
-  const res = await post('/api/bathrooms', { name: 'Test Diner', type: 'restaurant', city: 'Oslo', country: 'Norway', lat: 59.91, lng: 10.75, review: { ...stars, comment: 'nice' } });
+  const city = `Testville ${Date.now()}`;
+  const res = await post('/api/bathrooms', { name: 'Test Diner', type: 'restaurant', city, country: 'Norway', lat: 59.91, lng: 10.75, review: { ...stars, comment: 'nice' } });
   assert.strictEqual(res.status, 201);
   const b = await res.json();
   assert.strictEqual(b.rating, 4);
@@ -32,9 +36,9 @@ test('adds a bathroom with a first review, then another review', async () => {
   assert.strictEqual(detail.rating, 3);
   assert.strictEqual(detail.reviews[1].author, 'Anonymous');
 
-  const search = await (await fetch(`${base}/api/bathrooms?q=oslo`)).json();
+  const search = await (await fetch(`${base}/api/bathrooms?q=${encodeURIComponent(city.toLowerCase())}`)).json();
   assert.deepStrictEqual(search.bathrooms.map((x) => x.id), [b.id]);
-  assert.ok(fs.existsSync(process.env.DB_FILE));
+  if (!process.env.DATABASE_URL) assert.ok(fs.existsSync(process.env.DB_FILE));
 });
 
 test('rejects invalid input', async () => {
@@ -43,9 +47,16 @@ test('rejects invalid input', async () => {
   const { bathrooms } = await (await fetch(`${base}/api/bathrooms`)).json();
   assert.strictEqual((await post(`/api/bathrooms/${bathrooms[0].id}/reviews`, { ...stars, overall: 9 })).status, 400);
   assert.strictEqual((await fetch(`${base}/api/bathrooms/nope`)).status, 404);
+  const missing = '00000000-0000-4000-8000-000000000000';
+  assert.strictEqual((await fetch(`${base}/api/bathrooms/${missing}`)).status, 404);
+  assert.strictEqual((await post(`/api/bathrooms/${missing}/reviews`, stars)).status, 404);
 });
 
 test('serves the app and blocks path traversal', async () => {
   assert.match(await (await fetch(`${base}/`)).text(), /ToiletTime/);
   assert.notStrictEqual((await fetch(`${base}/..%2fserver.js`)).status, 200);
+});
+
+test('health check responds', async () => {
+  assert.deepStrictEqual(await (await fetch(`${base}/api/health`)).json(), { ok: true });
 });

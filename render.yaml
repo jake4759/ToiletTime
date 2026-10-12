@@ -1,0 +1,18 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Deploys the ToiletTime server (API + web app). Ratings are stored in the Postgres
+# database given by DATABASE_URL; Render asks for it when you create the Blueprint.
+services:
+  - type: web
+    name: toilettime
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DATABASE_URL
+        sync: false

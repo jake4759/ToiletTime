@@ -21,7 +21,7 @@ You need a computer (Mac, Windows or Linux) with [Node.js](https://nodejs.org) 1
 2. On your computer, in this folder, run:
 
    ```bash
-   npm run setup   # first time only: installs the app's dependencies
+   npm run setup   # first time only: installs dependencies
    npm run phone   # starts the ToiletTime server and the app's dev server
    ```
 
@@ -30,7 +30,7 @@ You need a computer (Mac, Windows or Linux) with [Node.js](https://nodejs.org) 1
 
 Changes to the code reload on the phone automatically while `npm run phone` is running.
 
-**If the app says "Not connected":** the phone can't reach the server on port 3000 of your computer. Check that both devices are on the same Wi-Fi network (not a guest network), and allow Node.js through your computer's firewall. Expo's `--tunnel` mode only tunnels the app itself, not the server, so it won't work unless you deploy the server and set `EXPO_PUBLIC_API_URL` (below).
+**If the app says "Not connected":** the phone can't reach the server on port 3000 of your computer. Check that both devices are on the same Wi-Fi network (not a guest network), and allow Node.js through your computer's firewall. Expo's `--tunnel` mode only tunnels the app itself, not the server, so use it only with a hosted server (see [Put it online](#put-it-online)).
 
 ### In the app
 
@@ -39,24 +39,57 @@ Changes to the code reload on the phone automatically while `npm run phone` is r
 - **List:** tap the list button or the search bar to search, filter by place type, and sort by distance, rating, review count or date.
 - **Details:** overall and per-category scores, amenities, all reviews, directions in Apple Maps, and a **Review** button to add your own rating.
 
-### Using a hosted server
+## Put it online
 
-To use the app away from your home Wi-Fi, deploy the server (for example on Render, Railway or Fly.io) and point the app at it:
+Hosting the server lets the app work anywhere, not just on your home Wi-Fi, and lets everyone share the same ratings. The setup below is free: [Neon](https://neon.tech) stores the ratings in Postgres and [Render](https://render.com) runs the server and the web app.
+
+1. **Create the database.** Sign up at [neon.tech](https://neon.tech), create a project, and copy its connection string. It looks like `postgresql://user:password@ep-....neon.tech/neondb?sslmode=require`.
+2. **Deploy the server.** Sign up at [render.com](https://render.com) with your GitHub account. Choose **New → Blueprint**, pick this repository and the branch that contains `render.yaml`, paste the Neon connection string when Render asks for `DATABASE_URL`, and click **Apply**.
+3. **Check it.** When the deploy finishes, open the URL Render shows (for example `https://toilettime.onrender.com`). You should see the ToiletTime web app with the sample restrooms. On first start the server creates its tables and loads the samples automatically.
+4. **If your URL is different** from `https://toilettime.onrender.com` (Render adds a suffix when a name is taken), put your URL in `mobile/eas.json` in both places that set `EXPO_PUBLIC_API_URL`.
+
+On Render's free plan the server sleeps after 15 minutes without visits, so the first request after a quiet period can take up to a minute. Paid plans stay awake.
+
+To point Expo Go at the hosted server instead of your computer:
 
 ```bash
 cd mobile
-EXPO_PUBLIC_API_URL=https://your-server.example.com npx expo start
+EXPO_PUBLIC_API_URL=https://toilettime.onrender.com npx expo start
 ```
 
-### Installing it as a standalone app
+## Install it on your iPhone with TestFlight
 
-Expo Go is the quickest way to test. To install ToiletTime with its own icon on your Home Screen, or to share it through TestFlight, you need an [Apple Developer Program](https://developer.apple.com/programs/) membership and an [Expo](https://expo.dev) account. Then run `npx eas-cli@latest build --platform ios` from `mobile/`. The app also needs a hosted server for this, since it won't be running next to your computer.
+This gives you ToiletTime as a real app with its own Home Screen icon, with no computer needed once it's installed. You can also invite up to 100 people to test it.
+
+You need:
+- An [Apple Developer Program](https://developer.apple.com/programs/) membership ($99 per year).
+- A free [Expo](https://expo.dev/signup) account. Expo builds the app in the cloud, so you don't need a Mac or Xcode.
+- The server online (see above), because the installed app talks to it.
+
+From this folder, run:
+
+```bash
+npm run setup            # first time only
+npm run ios:testflight
+```
+
+The command asks you to log in to Expo and to your Apple developer account. Answer **yes** to the prompts to create the project and let Expo manage the signing certificates. Expo then builds the app (about 15–20 minutes) and uploads it to App Store Connect.
+
+When Apple finishes processing the build (usually 10–30 minutes, and you'll get an email), install it:
+
+1. In [App Store Connect](https://appstoreconnect.apple.com), open **ToiletTime → TestFlight** and add yourself under **Internal Testing**.
+2. On your iPhone, install **TestFlight** from the App Store and open the invitation.
+
+To ship an update later, run `npm run ios:testflight` again. The build number goes up automatically.
+
+The app's bundle identifier is `com.jake4759.toilettime`, set in `mobile/app.json`. Change it before your first build if you want a different one; it can't be changed after the app is created in App Store Connect.
 
 ## Web app and server
 
-The server and web app need Node.js 18 or later and have no dependencies to install.
+The server and web app need Node.js 18 or later.
 
 ```bash
+npm install
 npm start   # server + web app at http://localhost:3000
 npm test    # API tests
 ```
@@ -64,7 +97,10 @@ npm test    # API tests
 | Variable | Default | Description |
 | --- | --- | --- |
 | `PORT` | `3000` | Port to listen on |
-| `DB_FILE` | `data/db.json` | Where ratings are stored. Created on first write, starting from `data/seed.json`. |
+| `DATABASE_URL` | none | Postgres connection string. When set, ratings are stored in Postgres; tables are created and seeded on first start. |
+| `DB_FILE` | `data/db.json` | Where ratings are stored when `DATABASE_URL` isn't set. Created on first write, starting from `data/seed.json`. |
+| `TRUST_PROXY` | none | Set to `1` behind a proxy such as Render's, so the per-client submission limit uses the real client address. |
+| `WRITE_LIMIT` | `30` | Maximum new restrooms and reviews per client every 10 minutes. |
 
 For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 
@@ -72,6 +108,7 @@ For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/api/health` | Health check |
 | `GET` | `/api/bathrooms?q=&type=&sort=` | List restrooms with average ratings |
 | `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `review`) |
 | `GET` | `/api/bathrooms/:id` | Restroom details and all reviews |

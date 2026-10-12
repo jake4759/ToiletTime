@@ -6,7 +6,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import MapView, { Marker, type Region } from 'react-native-maps';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { API_URL, api } from './src/api';
+import { API_URL, IS_HOSTED_API, api } from './src/api';
 import { Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
 import { distanceMeters, formatDistance } from './src/geo';
 import { AddSheet } from './src/screens/AddSheet';
@@ -142,7 +142,9 @@ function MapScreen() {
             <View style={styles.flex}>
               <Text style={[styles.bannerTitle, { color: theme.text }]}>Not connected</Text>
               <Text style={[styles.bannerText, { color: theme.muted }]}>
-                Couldn't reach {API_URL}. Make sure the server is running on the same Wi-Fi.
+                {IS_HOSTED_API
+                  ? "Couldn't reach ToiletTime. Check your internet connection and try again."
+                  : `Couldn't reach ${API_URL}. Make sure the server is running on the same Wi-Fi.`}
               </Text>
             </View>
             <Pressable onPress={load} hitSlop={10}>

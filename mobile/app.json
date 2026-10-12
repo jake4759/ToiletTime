@@ -8,7 +8,7 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "com.toilettime.app",
+      "bundleIdentifier": "com.jake4759.toilettime",
       "supportsTablet": true,
       "infoPlist": {
         "NSAppTransportSecurity": {
@@ -18,7 +18,7 @@
       }
     },
     "android": {
-      "package": "com.toilettime.app",
+      "package": "com.jake4759.toilettime",
       "adaptiveIcon": {
         "backgroundColor": "#0f3d3e",
         "foregroundImage": "./assets/android-icon-foreground.png",

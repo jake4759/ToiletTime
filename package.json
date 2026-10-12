@@ -1,16 +1,20 @@
 {
   "name": "toilettime",
   "version": "1.0.0",
-  "description": "Find and rate bathrooms at stores and restaurants around the world.",
+  "description": "Find and rate restrooms at stores, restaurants and caf\u00e9s around the world.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "setup": "npm install --prefix mobile",
-    "phone": "node scripts/dev.js"
+    "setup": "npm install && npm install --prefix mobile",
+    "phone": "node scripts/dev.js",
+    "ios:testflight": "cd mobile && npx eas-cli@latest build --platform ios --profile production --auto-submit"
   },
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
 }

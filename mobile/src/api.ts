@@ -14,6 +14,7 @@ function resolveApiUrl(): string {
 }
 
 export const API_URL = resolveApiUrl();
+export const IS_HOSTED_API = !!process.env.EXPO_PUBLIC_API_URL;
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
   let res: Response;
@@ -24,7 +25,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new Error(`Can't reach the ToiletTime server at ${API_URL}.`);
+    throw new Error("Can't reach the ToiletTime server. Check your internet connection.");
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
