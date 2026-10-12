@@ -17,6 +17,10 @@ ToiletTime has a native iPhone app (`mobile/`, built with Expo and React Native)
 
 ## Run it on your iPhone
 
+**On Windows, the easy way:** double-click **ToiletTime.bat** in this folder. It opens a menu where you pick what to do by typing a number: start the app, start it on any network, update to the newest version, first-time setup, sign in to Expo, open the website, or see all the commands. Option 8 puts a ToiletTime shortcut on your Desktop.
+
+The rest of this section explains the same steps as commands.
+
 You need a computer (Mac, Windows or Linux) with [Node.js](https://nodejs.org) 18 or later, and an iPhone on the same Wi-Fi network.
 
 1. On your iPhone, install **Expo Go** from the App Store.
