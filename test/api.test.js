@@ -9,6 +9,7 @@ const { startFakeSupabase } = require('./fake-supabase');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'toilettime-'));
 if (!process.env.DATABASE_URL) process.env.DB_FILE = path.join(tmp, 'db.json');
 process.env.PROFILE_LIMIT ??= '200'; // the tests change profiles more often than a person would
+process.env.WRITE_LIMIT ??= '500';
 const supabase = startFakeSupabase();
 const { server, storeReady } = require('../server');
 
@@ -44,10 +45,14 @@ async function poster(name) {
   return { ...u, username };
 }
 
+let restroomsAdded = 0;
+/** A different name every time, so the duplicate check doesn't treat test restrooms as the same place. */
+const uniqueName = () => `Spot ${String(++restroomsAdded).padStart(4, '0')}-${String(Date.now() % 1e9).padStart(9, '0')}`;
+
 async function addRestroom(token, extra = {}) {
   const res = await post(
     '/api/bathrooms',
-    { name: 'Test Diner', type: 'restaurant', city: `Testville ${Date.now()}`, lat: 59.91, lng: 10.75, review: stars, here: HERE, ...extra },
+    { name: uniqueName(), type: 'restaurant', city: `Testville ${Date.now()}`, lat: 59.91, lng: 10.75, review: stars, here: HERE, ...extra },
     token,
   );
   assert.strictEqual(res.status, 201);
@@ -117,7 +122,7 @@ test('reviews: one per person, listed under My Reviews, and deletable by their a
 
   const mine = (await (await request('GET', '/api/me/reviews', undefined, riley.token)).json()).reviews;
   assert.strictEqual(mine.length, 1);
-  assert.strictEqual(mine[0].restroomName, 'Test Diner');
+  assert.strictEqual(mine[0].restroomName, b.name);
   assert.strictEqual(mine[0].restroomId, b.id);
 
   assert.strictEqual((await request('DELETE', `/api/reviews/${mine[0].id}`, undefined, sam.token)).status, 404);
@@ -334,10 +339,67 @@ test('character: starts with defaults, locked items refused, reviews unlock rewa
   assert.deepStrictEqual(again.rewards.newItems, []);
   assert.strictEqual(again.rewards.levelUp, false);
 
-  // Deleting the review takes the cap back off.
+  // Being first to review it earned the Trailblazer Flag.
+  assert.strictEqual(b.rewards.firstReview, true);
+  assert.strictEqual(b.rewards.firstCount, 1);
+  assert.ok(b.rewards.newItems.some((i) => i.id === 'flag'));
+
+  // Deleting the review keeps what you unlocked, and posting it again doesn't earn it twice.
   const mine = (await (await request('GET', '/api/me/reviews', undefined, eve.token)).json()).reviews;
   await request('DELETE', `/api/reviews/${mine[0].id}`, undefined, eve.token);
   me = (await (await request('GET', '/api/me', undefined, eve.token)).json()).user;
+  assert.strictEqual(me.character.hat, 'cap');
+  assert.strictEqual(me.reviewCount, 1);
+  const reposted = await (await post(`/api/bathrooms/${b.id}/reviews`, { here: HERE, ...stars }, eve.token)).json();
+  assert.strictEqual(reposted.rewards.reviewCount, 1);
+  assert.strictEqual(reposted.rewards.firstReview, false);
+  assert.deepStrictEqual(reposted.rewards.newItems, []);
+
+  // A review a moderator deletes stops counting.
+  await (await storeReady).moderate(reposted.id, 'delete');
+  me = (await (await request('GET', '/api/me', undefined, eve.token)).json()).user;
+  assert.strictEqual(me.reviewCount, 0);
   assert.strictEqual(me.character.hat, 'none');
-  assert.strictEqual(me.character.skin, 'skin4');
+});
+
+test('keeping reviews honest: duplicates, spam, edits and review icons', async () => {
+  const kim = await poster('kim');
+  const lee = await poster('lee');
+  const taco = `Palace ${Date.now()} Tacos`;
+  const b = await addRestroom(kim.token, { name: taco });
+
+  // The same place added again by hand points you to the one already there.
+  let res = await post('/api/bathrooms', { name: `The ${taco} Restroom`, type: 'restaurant', lat: 59.9101, lng: 10.7501, review: stars, here: HERE }, lee.token);
+  assert.strictEqual(res.status, 409);
+  const dup = await res.json();
+  assert.strictEqual(dup.code, 'duplicate');
+  assert.strictEqual(dup.existingId, b.id);
+  // A different business next door is fine.
+  res = await post('/api/bathrooms', { name: `Burger Barn ${Date.now()}`, type: 'restaurant', lat: 59.9101, lng: 10.7501, here: HERE }, lee.token);
+  assert.strictEqual(res.status, 201);
+  // Not first, so no Trailblazer credit for the second reviewer.
+  res = await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, here: HERE }, lee.token);
+  assert.strictEqual(res.status, 201);
+  assert.strictEqual((await res.json()).rewards.firstReview, false);
+
+  // Spammy comments are refused.
+  for (const comment of ['aaaaaaaaaaaaaaa', 'buy now at cheap.com and http://spam.example/x', 'lololololol']) {
+    res = await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, comment, here: HERE }, lee.token);
+    assert.strictEqual(res.status, 400, comment);
+  }
+
+  // Editing keeps the original date and marks the review as edited.
+  res = await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, comment: 'Cleaner than expected.', here: HERE }, kim.token);
+  const edited = await res.json();
+  assert.ok(edited.editedAt);
+  assert.notStrictEqual(edited.createdAt, edited.editedAt);
+
+  // Reviews show your character unless you choose your picture.
+  let detail = await (await fetch(`${base}/api/bathrooms/${b.id}`)).json();
+  assert.ok(detail.reviews.find((r) => r.userId === kim.id).authorCharacter);
+  res = await request('PATCH', '/api/me', { reviewIcon: 'photo' }, kim.token);
+  assert.strictEqual((await res.json()).user.reviewIcon, 'photo');
+  detail = await (await fetch(`${base}/api/bathrooms/${b.id}`)).json();
+  assert.strictEqual(detail.reviews.find((r) => r.userId === kim.id).authorCharacter, null);
+  assert.strictEqual((await request('PATCH', '/api/me', { reviewIcon: 'emoji' }, kim.token)).status, 400);
 });

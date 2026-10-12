@@ -1,5 +1,7 @@
 // Your ToiletTime character ("Flush Buddy"): the closet of items, what unlocks them, and levels.
-// Items unlock by the number of restrooms you've reviewed. The app draws each item by its id.
+// Items unlock by the number of restrooms you've reviewed (`unlock`), and a few special
+// "Trailblazer" items by how many restrooms you were the first to review (`firsts`).
+// The app draws each item by its id.
 
 const COLORS = {
   hair: ['#2b1d16', '#5a3825', '#a0632f', '#e0b45a', '#d2483b', '#9aa0a6', '#f4f1ea', '#3f6fd8', '#e05aa8', '#3fb37f'],
@@ -44,6 +46,7 @@ const SLOTS = {
       { id: 'tophat', name: 'Top Hat', unlock: 9 },
       { id: 'crown', name: 'Crown', unlock: 12 },
       { id: 'tpcrown', name: 'TP Tiara', unlock: 20 },
+      { id: 'explorer', name: 'Explorer Hat', unlock: 0, firsts: 3 },
     ],
   },
   glasses: {
@@ -95,6 +98,19 @@ const SLOTS = {
       { id: 'plunger', name: 'Plunger', unlock: 5 },
       { id: 'map', name: 'Restroom Map', unlock: 8 },
       { id: 'goldplunger', name: 'Golden Plunger', unlock: 25 },
+      { id: 'flag', name: 'Trailblazer Flag', unlock: 0, firsts: 1 },
+    ],
+  },
+  pose: {
+    label: 'Poses',
+    items: [
+      { id: 'stand', name: 'Stand', unlock: 0 },
+      { id: 'wave', name: 'Wave', unlock: 0 },
+      { id: 'point', name: 'Point', unlock: 1 },
+      { id: 'thumbsup', name: 'Thumbs Up', unlock: 2 },
+      { id: 'cheer', name: 'Cheer', unlock: 4 },
+      { id: 'dance', name: 'Dance', unlock: 7 },
+      { id: 'tada', name: 'Ta-da!', unlock: 12 },
     ],
   },
 };
@@ -120,12 +136,25 @@ const DEFAULT_CHARACTER = {
   bottomColor: COLORS.clothes[1],
   shoes: 'sneakers',
   held: 'none',
+  pose: 'stand',
   bgColor: COLORS.background[0],
 };
 
 const item = (slot, id) => SLOTS[slot]?.items.find((i) => i.id === id);
 
-function levelFor(count) {
+/** Progress is { reviews, firsts }; a plain number means reviews only. */
+const prog = (p) => (typeof p === 'number' ? { reviews: p, firsts: 0 } : { reviews: p?.reviews || 0, firsts: p?.firsts || 0 });
+const isUnlocked = (it, p) => p.reviews >= it.unlock && p.firsts >= (it.firsts || 0);
+
+function lockedMessage(it) {
+  if (it.firsts) {
+    return `${it.name} unlocks after being the first to review ${it.firsts} restroom${it.firsts === 1 ? '' : 's'}.`;
+  }
+  return `${it.name} unlocks after reviewing ${it.unlock} restroom${it.unlock === 1 ? '' : 's'}.`;
+}
+
+function levelFor(progress) {
+  const count = prog(progress).reviews;
   let level = LEVELS[0];
   for (const l of LEVELS) if (count >= l.min) level = l;
   const next = LEVELS.find((l) => l.min > count) || null;
@@ -133,30 +162,34 @@ function levelFor(count) {
 }
 
 /** The next item(s) you'll unlock, to show as a goal. */
-function nextUnlock(count) {
+function nextUnlock(progress) {
+  const count = prog(progress).reviews;
   const upcoming = Object.entries(SLOTS)
     .flatMap(([slot, s]) => s.items.map((i) => ({ slot, ...i })))
-    .filter((i) => i.unlock > count)
+    .filter((i) => !i.firsts && i.unlock > count)
     .sort((a, b) => a.unlock - b.unlock);
   if (!upcoming.length) return null;
   const at = upcoming[0].unlock;
   return { at, items: upcoming.filter((i) => i.unlock === at).map(({ slot, id, name }) => ({ slot, id, name })) };
 }
 
-/** Items that unlocked when the review count went from `before` to `after`. */
+/** Items that unlocked when progress went from `before` to `after`. */
 function newlyUnlocked(before, after) {
+  const b = prog(before);
+  const a = prog(after);
   return Object.entries(SLOTS).flatMap(([slot, s]) =>
-    s.items.filter((i) => i.unlock > before && i.unlock <= after).map(({ id, name }) => ({ slot, id, name })),
+    s.items.filter((i) => !isUnlocked(i, b) && isUnlocked(i, a)).map(({ id, name }) => ({ slot, id, name })),
   );
 }
 
 /** Fills gaps with defaults and swaps out anything not (or no longer) unlocked. */
-function sanitize(character, count) {
+function sanitize(character, progress) {
+  const p = prog(progress);
   const out = { ...DEFAULT_CHARACTER };
   const c = character && typeof character === 'object' ? character : {};
   for (const slot of Object.keys(SLOTS)) {
     const it = item(slot, c[slot]);
-    if (it && it.unlock <= count) out[slot] = it.id;
+    if (it && isUnlocked(it, p)) out[slot] = it.id;
   }
   if (COLORS.hair.includes(c.hairColor)) out.hairColor = c.hairColor;
   if (COLORS.clothes.includes(c.topColor)) out.topColor = c.topColor;
@@ -166,20 +199,19 @@ function sanitize(character, count) {
 }
 
 /** Validates a character someone wants to save. Throws a readable message if something isn't allowed. */
-function validate(character, count) {
+function validate(character, progress) {
+  const p = prog(progress);
   if (!character || typeof character !== 'object' || Array.isArray(character)) throw new Error('invalid character');
   for (const slot of Object.keys(SLOTS)) {
     if (character[slot] === undefined) continue;
     const it = item(slot, character[slot]);
     if (!it) throw new Error(`Unknown ${SLOTS[slot].label.toLowerCase()} item.`);
-    if (it.unlock > count) {
-      throw new Error(`${it.name} unlocks after reviewing ${it.unlock} restroom${it.unlock === 1 ? '' : 's'}.`);
-    }
+    if (!isUnlocked(it, p)) throw new Error(lockedMessage(it));
   }
   for (const [key, palette] of [['hairColor', COLORS.hair], ['topColor', COLORS.clothes], ['bottomColor', COLORS.clothes], ['bgColor', COLORS.background]]) {
     if (character[key] !== undefined && !palette.includes(character[key])) throw new Error('invalid color');
   }
-  return sanitize(character, count);
+  return sanitize(character, p);
 }
 
 const catalog = () => ({ slots: SLOTS, colors: COLORS, levels: LEVELS, defaults: DEFAULT_CHARACTER });

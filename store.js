@@ -43,8 +43,28 @@ function publicProfile(p) {
     avatarUrl: avatarUrl(p),
     markerColor: p.markerColor ?? null,
     character: p.character ?? null,
+    reviewIcon: p.reviewIcon ?? null,
     createdAt: p.createdAt,
   };
+}
+
+/**
+ * The character to show next to someone's reviews, or null to show their picture.
+ * People choose in their profile; by default it's the character unless they have a picture.
+ */
+function reviewCharacter(p, hasAvatar) {
+  if (!p) return null;
+  const useCharacter = p.reviewIcon ? p.reviewIcon === 'character' : !hasAvatar;
+  return useCharacter ? (p.character ?? {}) : null;
+}
+
+const toRad = (d) => (d * Math.PI) / 180;
+/** Distance in meters between two { lat, lng } points. */
+function distanceM(a, b) {
+  const h =
+    Math.sin(toRad(b.lat - a.lat) / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(toRad(b.lng - a.lng) / 2) ** 2;
+  return 2 * 6371e3 * Math.asin(Math.sqrt(h));
 }
 
 function summarize(b) {
@@ -76,7 +96,10 @@ class JsonStore {
     this.profiles = data.profiles || [];
     this.bathrooms = data.bathrooms || [];
     this.visits = data.visits || [];
-    if (this.cleanUp(data)) this.save();
+    /** Restrooms each person has earned progress for: { userId, restroomId, first, at }. Kept when a review is deleted. */
+    this.credits = data.credits || [];
+    const backfilled = this.backfillCredits();
+    if (this.cleanUp(data) || backfilled) this.save();
   }
 
   /** Removes sample data and accounts from older versions. Returns true if anything changed. */
@@ -99,10 +122,28 @@ class JsonStore {
     return changed || this.bathrooms.length !== before;
   }
 
+  /** Gives credit for reviews written before the ledger existed. */
+  backfillCredits() {
+    let changed = false;
+    for (const b of this.bathrooms) {
+      for (const r of b.reviews) {
+        if (r.userId && !r.hidden && !this.credits.some((c) => c.userId === r.userId && c.restroomId === b.id)) {
+          this.credits.push({ userId: r.userId, restroomId: b.id, first: false, at: r.createdAt });
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
   save() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ bathrooms: this.bathrooms, profiles: this.profiles, visits: this.visits }, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(
+        { bathrooms: this.bathrooms, profiles: this.profiles, visits: this.visits, credits: this.credits },
+        null,
+        2,
+      ),);
     fs.renameSync(tmp, this.file);
   }
 
@@ -117,6 +158,7 @@ class JsonStore {
       userId: r.userId ?? null,
       author: p?.username ?? r.author,
       authorAvatarUrl: avatarUrl(p),
+      authorCharacter: reviewCharacter(p, !!p?.avatar),
       overall: r.overall,
       cleanliness: r.cleanliness,
       supplies: r.supplies,
@@ -124,6 +166,7 @@ class JsonStore {
       comment: r.comment,
       hidden: !!r.hidden,
       createdAt: r.createdAt,
+      editedAt: r.editedAt ?? null,
     };
   }
 
@@ -174,8 +217,11 @@ class JsonStore {
   async moderate(reviewId, action) {
     const found = this.findReview(reviewId);
     if (!found) return false;
-    if (action === 'delete') found.b.reviews = found.b.reviews.filter((x) => x.id !== reviewId);
-    else Object.assign(found.r, { hidden: false, reports: [] });
+    if (action === 'delete') {
+      found.b.reviews = found.b.reviews.filter((x) => x.id !== reviewId);
+      // A review removed by a moderator doesn't count toward unlocks.
+      this.credits = this.credits.filter((c) => !(c.userId === found.r.userId && c.restroomId === found.b.id));
+    } else Object.assign(found.r, { hidden: false, reports: [] });
     this.save();
     return true;
   }
@@ -197,7 +243,10 @@ class JsonStore {
     if (!b) return null;
     const existing = review.userId ? b.reviews.findIndex((r) => r.userId === review.userId) : -1;
     // Editing a review starts it fresh: earlier reports no longer apply to the new text.
-    if (existing >= 0) b.reviews[existing] = { ...review, id: b.reviews[existing].id };
+    if (existing >= 0) {
+      const before = b.reviews[existing];
+      b.reviews[existing] = { ...review, id: before.id, createdAt: before.createdAt, editedAt: review.createdAt };
+    }
     else b.reviews.push(review);
     this.save();
     return this.publicReview(existing >= 0 ? b.reviews[existing] : review);
@@ -230,11 +279,46 @@ class JsonStore {
     return p && publicProfile(p);
   }
 
-  /** Restrooms this person has reviewed (hidden reviews don't count). */
-  async countUserReviews(userId) {
-    let n = 0;
-    for (const b of this.bathrooms) if (b.reviews.some((r) => r.userId === userId && !r.hidden)) n++;
-    return n;
+  /**
+   * Progress toward unlocks: restrooms reviewed, and how many of those you reviewed first.
+   * Deleting a review keeps its credit; reviews hidden after reports don't count.
+   */
+  async progress(userId) {
+    const hidden = new Set();
+    for (const b of this.bathrooms) if (b.reviews.some((r) => r.userId === userId && r.hidden)) hidden.add(b.id);
+    const mine = this.credits.filter((c) => c.userId === userId && !hidden.has(c.restroomId));
+    return { reviews: mine.length, firsts: mine.filter((c) => c.first).length };
+  }
+
+  /** Records progress for reviewing a restroom. Returns false if this person already had credit for it. */
+  async grantCredit(userId, restroomId, first) {
+    if (this.credits.some((c) => c.userId === userId && c.restroomId === restroomId)) return false;
+    this.credits.push({ userId, restroomId, first: !!first, at: new Date().toISOString() });
+    this.save();
+    return true;
+  }
+
+  /** How many new restrooms and reviews this person has earned credit for since a time (for daily limits). */
+  async creditsSince(userId, since) {
+    return this.credits.filter((c) => c.userId === userId && c.at > since).length;
+  }
+
+  /** Restrooms within `meters` of a point. */
+  async restroomsNear(point, meters) {
+    return this.bathrooms
+      .filter((b) => distanceM(point, b) <= meters)
+      .map((b) => ({ id: b.id, name: b.name, lat: b.lat, lng: b.lng, osmId: b.osmId ?? null }));
+  }
+
+  /** Accounts whose many reviews all give the same extreme score (for moderators to look at). */
+  async listSuspicious(minReviews) {
+    const byUser = new Map();
+    for (const b of this.bathrooms) {
+      for (const r of b.reviews) if (r.userId) byUser.set(r.userId, [...(byUser.get(r.userId) || []), r.overall]);
+    }
+    return [...byUser]
+      .filter(([, scores]) => scores.length >= minReviews && new Set(scores).size === 1 && [1, 5].includes(scores[0]))
+      .map(([userId, scores]) => ({ userId, username: this.profile(userId)?.username ?? null, reviews: scores.length, overall: scores[0] }));
   }
 
   async getRestroomPoint(id) {
@@ -297,6 +381,7 @@ class JsonStore {
   async deleteProfile(id) {
     this.profiles = this.profiles.filter((p) => p.id !== id);
     this.visits = this.visits.filter((v) => v.userId !== id);
+    this.credits = this.credits.filter((c) => c.userId !== id);
     for (const b of this.bathrooms) {
       for (const r of b.reviews) if (r.userId === id) Object.assign(r, { userId: null, author: 'Former member' });
     }
@@ -357,6 +442,22 @@ const SCHEMA = `
   );
   ALTER TABLE reviews ADD COLUMN IF NOT EXISTS user_id uuid;
   ALTER TABLE reviews ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false;
+  ALTER TABLE reviews ADD COLUMN IF NOT EXISTS edited_at timestamptz;
+  ALTER TABLE profiles ADD COLUMN IF NOT EXISTS review_icon text;
+
+  -- Restrooms each person has earned progress for. Kept when a review is deleted, so
+  -- deleting and re-posting can't farm unlocks.
+  CREATE TABLE IF NOT EXISTS review_credits (
+    user_id uuid NOT NULL,
+    restroom_id uuid NOT NULL,
+    first boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, restroom_id)
+  );
+  INSERT INTO review_credits (user_id, restroom_id, created_at)
+    SELECT DISTINCT ON (user_id, restroom_id) user_id, restroom_id, created_at FROM reviews
+    WHERE user_id IS NOT NULL AND NOT hidden
+    ON CONFLICT DO NOTHING;
   CREATE TABLE IF NOT EXISTS review_reports (
     review_id uuid NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
     reporter_id uuid NOT NULL,
@@ -390,7 +491,8 @@ const SUMMARY_SQL = `
 `;
 
 const REVIEW_SQL = `
-  SELECT v.*, p.username AS profile_username, p.avatar_updated_at AS profile_avatar_at
+  SELECT v.*, p.username AS profile_username, p.avatar_updated_at AS profile_avatar_at,
+         p.character AS profile_character, p.review_icon AS profile_review_icon, p.id AS profile_id
   FROM reviews v LEFT JOIN profiles p ON p.id = v.user_id
 `;
 
@@ -422,6 +524,10 @@ const toReview = (row) => ({
   userId: row.user_id,
   author: row.profile_username ?? row.author,
   authorAvatarUrl: avatarUrl(row.user_id && { id: row.user_id, avatarUpdatedAt: iso(row.profile_avatar_at) }),
+  authorCharacter: reviewCharacter(
+    row.profile_id && { character: row.profile_character, reviewIcon: row.profile_review_icon },
+    !!row.profile_avatar_at,
+  ),
   overall: row.overall,
   cleanliness: row.cleanliness,
   supplies: row.supplies,
@@ -429,6 +535,7 @@ const toReview = (row) => ({
   comment: row.comment,
   hidden: !!row.hidden,
   createdAt: iso(row.created_at),
+  editedAt: iso(row.edited_at),
 });
 
 const toProfile = (row) =>
@@ -438,6 +545,7 @@ const toProfile = (row) =>
     username: row.username,
     markerColor: row.marker_color,
     character: row.character,
+    reviewIcon: row.review_icon,
     avatarUpdatedAt: iso(row.avatar_updated_at),
     createdAt: iso(row.created_at),
   });
@@ -483,7 +591,7 @@ class PgStore {
        ON CONFLICT (restroom_id, user_id) DO UPDATE SET
          author = EXCLUDED.author, overall = EXCLUDED.overall, cleanliness = EXCLUDED.cleanliness,
          supplies = EXCLUDED.supplies, privacy = EXCLUDED.privacy, comment = EXCLUDED.comment,
-         created_at = EXCLUDED.created_at, hidden = false
+         edited_at = EXCLUDED.created_at, hidden = false
        RETURNING id`,
       [v.id, restroomId, v.userId ?? null, v.author, v.overall, v.cleanliness, v.supplies, v.privacy, v.comment, v.createdAt],
     );
@@ -530,7 +638,9 @@ class PgStore {
 
   async listUserReviews(userId) {
     const { rows } = await this.pool.query(
-      `SELECT v.*, p.username AS profile_username, p.avatar_updated_at AS profile_avatar_at, r.name AS restroom_name
+      `SELECT v.*, p.username AS profile_username, p.avatar_updated_at AS profile_avatar_at,
+              p.character AS profile_character, p.review_icon AS profile_review_icon, p.id AS profile_id,
+              r.name AS restroom_name
        FROM reviews v JOIN restrooms r ON r.id = v.restroom_id LEFT JOIN profiles p ON p.id = v.user_id
        WHERE v.user_id = $1 ORDER BY v.created_at DESC`,
       [userId],
@@ -573,7 +683,15 @@ class PgStore {
   async moderate(reviewId, action) {
     if (!isUuid(reviewId)) return false;
     if (action === 'delete') {
-      return (await this.pool.query('DELETE FROM reviews WHERE id = $1', [reviewId])).rowCount > 0;
+      const { rows } = await this.pool.query('DELETE FROM reviews WHERE id = $1 RETURNING user_id, restroom_id', [reviewId]);
+      if (rows[0]?.user_id) {
+        // A review removed by a moderator doesn't count toward unlocks.
+        await this.pool.query('DELETE FROM review_credits WHERE user_id = $1 AND restroom_id = $2', [
+          rows[0].user_id,
+          rows[0].restroom_id,
+        ]);
+      }
+      return rows.length > 0;
     }
     await this.pool.query('DELETE FROM review_reports WHERE review_id = $1', [reviewId]);
     return (await this.pool.query('UPDATE reviews SET hidden = false WHERE id = $1', [reviewId])).rowCount > 0;
@@ -595,12 +713,56 @@ class PgStore {
     return this.getProfile(id);
   }
 
-  async countUserReviews(userId) {
+  async progress(userId) {
+    if (!isUuid(userId)) return { reviews: 0, firsts: 0 };
     const { rows } = await this.pool.query(
-      'SELECT count(DISTINCT restroom_id)::int AS n FROM reviews WHERE user_id = $1 AND NOT hidden',
+      `SELECT count(*)::int AS reviews, count(*) FILTER (WHERE c.first)::int AS firsts
+       FROM review_credits c
+       WHERE c.user_id = $1 AND NOT EXISTS (
+         SELECT 1 FROM reviews v WHERE v.user_id = c.user_id AND v.restroom_id = c.restroom_id AND v.hidden)`,
       [userId],
     );
+    return rows[0];
+  }
+
+  async grantCredit(userId, restroomId, first) {
+    const { rowCount } = await this.pool.query(
+      'INSERT INTO review_credits (user_id, restroom_id, first) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+      [userId, restroomId, !!first],
+    );
+    return rowCount > 0;
+  }
+
+  async creditsSince(userId, since) {
+    const { rows } = await this.pool.query(
+      'SELECT count(*)::int AS n FROM review_credits WHERE user_id = $1 AND created_at > $2',
+      [userId, since],
+    );
     return rows[0].n;
+  }
+
+  async restroomsNear(point, meters) {
+    const dLat = meters / 111_320;
+    const dLng = meters / (111_320 * Math.max(Math.cos(toRad(point.lat)), 0.01));
+    const { rows } = await this.pool.query(
+      'SELECT id, name, lat, lng, osm_id FROM restrooms WHERE lat BETWEEN $1 AND $2 AND lng BETWEEN $3 AND $4',
+      [point.lat - dLat, point.lat + dLat, point.lng - dLng, point.lng + dLng],
+    );
+    return rows
+      .filter((r) => distanceM(point, r) <= meters)
+      .map((r) => ({ id: r.id, name: r.name, lat: r.lat, lng: r.lng, osmId: r.osm_id }));
+  }
+
+  async listSuspicious(minReviews) {
+    const { rows } = await this.pool.query(
+      `SELECT v.user_id, p.username, count(*)::int AS reviews, min(v.overall) AS overall
+       FROM reviews v LEFT JOIN profiles p ON p.id = v.user_id
+       WHERE v.user_id IS NOT NULL
+       GROUP BY v.user_id, p.username
+       HAVING count(*) >= $1 AND min(v.overall) = max(v.overall) AND min(v.overall) IN (1, 5)`,
+      [minReviews],
+    );
+    return rows.map((r) => ({ userId: r.user_id, username: r.username, reviews: r.reviews, overall: r.overall }));
   }
 
   async getRestroomPoint(id) {
@@ -643,6 +805,7 @@ class PgStore {
     if (fields.username !== undefined) sets.push(`username = $${values.push(fields.username)}`);
     if (fields.markerColor !== undefined) sets.push(`marker_color = $${values.push(fields.markerColor)}`);
     if (fields.character !== undefined) sets.push(`character = $${values.push(JSON.stringify(fields.character))}::jsonb`);
+    if (fields.reviewIcon !== undefined) sets.push(`review_icon = $${values.push(fields.reviewIcon)}`);
     if (!sets.length) return this.getProfile(id);
     try {
       const { rows } = await this.pool.query(`UPDATE profiles SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, values);
@@ -675,6 +838,7 @@ class PgStore {
       await client.query(`UPDATE reviews SET author = 'Former member' WHERE user_id = $1`, [id]);
       await client.query('DELETE FROM profiles WHERE id = $1', [id]); // reviews keep, user_id set null
       await client.query('DELETE FROM visits WHERE user_id = $1', [id]);
+      await client.query('DELETE FROM review_credits WHERE user_id = $1', [id]);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');

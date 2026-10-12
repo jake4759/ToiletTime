@@ -2,6 +2,7 @@
 //   npm run moderate                 list reported reviews
 //   npm run moderate -- delete <id>  delete a review
 //   npm run moderate -- restore <id> show a hidden review again and clear its reports
+//   npm run moderate -- suspicious   accounts whose reviews all give the same 1 or 5 stars
 const path = require('node:path');
 
 require('../env').loadEnvFile(path.join(__dirname, '..', '.env'));
@@ -16,6 +17,15 @@ const { REPORT_REASONS, HIDE_AFTER_REPORTS } = require('../moderation');
       if (!id) throw new Error(`Usage: npm run moderate -- ${action} <review id>`);
       const ok = await store.moderate(id, action);
       console.log(ok ? (action === 'delete' ? 'Review deleted.' : 'Review restored and its reports cleared.') : 'No review with that ID.');
+      return;
+    }
+    if (action === 'suspicious') {
+      const accounts = await store.listSuspicious(5);
+      if (!accounts.length) console.log('No suspicious accounts found.');
+      for (const a of accounts) {
+        console.log(`@${a.username ?? '(no username)'}: all ${a.reviews} reviews are ${a.overall}/5  (user ${a.userId})`);
+      }
+      if (accounts.length) console.log('\nSee their reviews in the app, and delete any fake ones with: npm run moderate -- delete <ID>');
       return;
     }
     const reported = await store.listReported();

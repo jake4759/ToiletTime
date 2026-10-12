@@ -88,6 +88,19 @@ const allowProfileChange = rateLimiter(Number(process.env.PROFILE_LIMIT) || 30);
 const allowPlacesLookup = rateLimiter(Number(process.env.PLACES_LIMIT) || 300);
 const allowVisitPing = rateLimiter(Number(process.env.VISIT_LIMIT) || 200);
 
+/** Per-account limits (on top of the per-client ones above), counted over a day. */
+const DAILY_REVIEW_LIMIT = Number(process.env.DAILY_REVIEW_LIMIT) || 20;
+const DAILY_NEW_RESTROOM_LIMIT = Number(process.env.DAILY_NEW_RESTROOM_LIMIT) || 8;
+const newRestroomsByUser = new Map();
+function allowNewRestroom(userId) {
+  const now = Date.now();
+  const recent = (newRestroomsByUser.get(userId) || []).filter((t) => now - t < 24 * 3600 * 1000);
+  if (recent.length >= DAILY_NEW_RESTROOM_LIMIT) return false;
+  recent.push(now);
+  newRestroomsByUser.set(userId, recent);
+  return true;
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const hits of limiters) {
@@ -164,16 +177,23 @@ function avatarImage(body) {
 }
 
 async function progress(store, userId) {
-  const reviewCount = await store.countUserReviews(userId);
-  return { reviewCount, level: character.levelFor(reviewCount), nextUnlock: character.nextUnlock(reviewCount) };
+  const counts = await store.progress(userId);
+  return {
+    reviewCount: counts.reviews,
+    firstCount: counts.firsts,
+    level: character.levelFor(counts),
+    nextUnlock: character.nextUnlock(counts),
+  };
 }
+
+const counts = (p) => ({ reviews: p.reviewCount, firsts: p.firstCount });
 
 async function me(store, user) {
   const profile = await store.ensureProfile(user.id);
   const p = await progress(store, user.id);
   return {
     ...profile,
-    character: character.sanitize(profile.character, p.reviewCount),
+    character: character.sanitize(profile.character, counts(p)),
     ...p,
     email: user.email,
     emailVerified: user.emailVerified,
@@ -181,11 +201,70 @@ async function me(store, user) {
   };
 }
 
-/** Rewards earned by a new review: level and any items it unlocked. */
-async function rewardsAfter(store, userId, before) {
+/**
+ * Records progress for a review and returns the rewards: level and any items it unlocked.
+ * `first` is true when nobody had reviewed the restroom yet. Each restroom earns credit once,
+ * so editing, or deleting and re-posting, a review earns nothing more.
+ */
+async function rewardFor(store, userId, restroomId, first) {
+  const before = await progress(store, userId);
+  const credited = await store.grantCredit(userId, restroomId, first);
   const p = await progress(store, userId);
-  const levelUp = character.levelFor(before).name !== p.level.name;
-  return { ...p, levelUp, newItems: character.newlyUnlocked(before, p.reviewCount) };
+  return {
+    ...p,
+    firstReview: credited && !!first,
+    levelUp: before.level.name !== p.level.name,
+    newItems: character.newlyUnlocked(counts(before), counts(p)),
+  };
+}
+
+// ---------- keeping reviews honest ----------
+
+const URL_PATTERN = /(https?:\/\/|www\.)\S+|\b[a-z0-9-]+\.(com|net|org|io|co|ru|xyz|info|biz|top|shop)\b/gi;
+
+/** Rejects comments that look like spam: lots of links, or keyboard mashing. */
+function checkComment(text) {
+  if ((text.match(URL_PATTERN) || []).length > 1) {
+    throw new ValidationError('Reviews can include at most one link.');
+  }
+  const letters = text.replace(/\s/g, '');
+  if (/(.)\1{9,}/u.test(letters) || (letters.length >= 8 && new Set(letters.toLowerCase()).size <= 2)) {
+    throw new ValidationError('Please write a real review, or leave the comment empty.');
+  }
+}
+
+const STOP_WORDS = /\b(the|a|an|restroom|restrooms|bathroom|bathrooms|toilet|toilets|wc|public|mens|womens)\b/g;
+const simpleName = (name) =>
+  String(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(STOP_WORDS, '')
+    .replace(/\s+/g, '');
+
+/** An existing restroom at the same spot with a similar name, so the same place isn't added twice. */
+async function findDuplicate(store, bathroom) {
+  const name = simpleName(bathroom.name);
+  for (const r of await store.restroomsNear(bathroom, DUPLICATE_RADIUS_M)) {
+    // Two different OpenStreetMap places are different places, even with the same name.
+    if (bathroom.osmId && r.osmId) continue;
+    const other = simpleName(r.name);
+    if (!name || !other) continue;
+    if (name === other || (Math.min(name.length, other.length) >= 4 && (name.includes(other) || other.includes(name)))) {
+      return r;
+    }
+  }
+  return null;
+}
+const DUPLICATE_RADIUS_M = 60;
+
+async function checkDailyLimit(store, userId) {
+  if ((await store.creditsSince(userId, hoursAgo(24))) >= DAILY_REVIEW_LIMIT) {
+    throw new HttpError(
+      429,
+      `You've reviewed ${DAILY_REVIEW_LIMIT} restrooms today, which is the daily limit. Thanks for all the help! Try again tomorrow.`,
+      'daily_limit',
+    );
+  }
 }
 
 // ---------- were you there? ----------
@@ -252,9 +331,13 @@ async function handleMe(req, res, store, parts) {
     const fields = {};
     if (body.username !== undefined) fields.username = username(body.username);
     if (body.markerColor !== undefined) fields.markerColor = markerColor(body.markerColor);
+    if (body.reviewIcon !== undefined) {
+      if (![null, 'character', 'photo'].includes(body.reviewIcon)) throw new ValidationError('invalid review icon');
+      fields.reviewIcon = body.reviewIcon;
+    }
     if (body.character !== undefined) {
       try {
-        fields.character = character.validate(body.character, await store.countUserReviews(user.id));
+        fields.character = character.validate(body.character, await store.progress(user.id));
       } catch (err) {
         throw new ValidationError(err.message);
       }
@@ -334,10 +417,12 @@ function validateReview(body, profile) {
     cleanliness: stars(body.cleanliness, 'cleanliness'),
     supplies: stars(body.supplies, 'supplies'),
     privacy: stars(body.privacy, 'privacy'),
-    comment: maskText(str(body.comment, 1000)),
+    comment: maskText(checked(str(body.comment, 1000))),
     createdAt: new Date().toISOString(),
   };
 }
+
+const checked = (text) => (checkComment(text), text);
 
 function osmId(v) {
   if (v === undefined || v === null || v === '') return null;
@@ -538,10 +623,8 @@ async function handleApi(req, res, url) {
   if (parts[1] !== 'bathrooms') return send(res, 404, { error: 'not found' });
 
   let profile = null;
-  let reviewsBefore = 0;
   if (req.method === 'POST') {
     ({ profile } = await requirePoster(store, req));
-    reviewsBefore = await store.countUserReviews(profile.id);
     if (!allowWrite(req)) return send(res, 429, { error: 'Too many submissions. Please try again in a few minutes.' });
   }
 
@@ -576,19 +659,36 @@ async function handleApi(req, res, url) {
     const review = body.review ? validateReview(body.review, profile) : null;
     const here = position(body.here);
     // A place from the map that someone already rated: add the review to that restroom instead.
+    if (review) await checkDailyLimit(store, profile.id);
     const existingId = bathroom.osmId && (await store.findIdByOsmId(bathroom.osmId));
     if (existingId) {
       const point = await store.getRestroomPoint(existingId);
       await requirePresence(store, profile.id, point, restroomKeys(point), here);
+      const first = (await store.get(existingId)).reviewCount === 0;
       if (review) await store.addReview(existingId, review);
-      const rewards = await rewardsAfter(store, profile.id, reviewsBefore);
+      const rewards = review ? await rewardFor(store, profile.id, existingId, first) : undefined;
       return send(res, 200, { ...(await store.get(existingId)), rewards });
+    }
+    // The same place added again by hand: send people to the one that's already there.
+    const duplicate = await findDuplicate(store, bathroom);
+    if (duplicate) {
+      throw Object.assign(
+        new HttpError(409, `${duplicate.name} is already on the map right here. Open it to add your review.`, 'duplicate'),
+        { extra: { existingId: duplicate.id } },
+      );
     }
     // A brand-new restroom: you have to be there (or have been near this map place today).
     await requirePresence(store, profile.id, bathroom, bathroom.osmId ? [`osm:${bathroom.osmId}`] : [], here);
+    if (!allowNewRestroom(profile.id)) {
+      throw new HttpError(
+        429,
+        `You can add up to ${DAILY_NEW_RESTROOM_LIMIT} new restrooms a day. Try again tomorrow, or rate ones already on the map.`,
+        'daily_limit',
+      );
+    }
     const created = await store.addRestroom(bathroom, review);
     await store.recordVisits(profile.id, restroomKeys(bathroom), hoursAgo(VISIT_KEEP_HOURS));
-    const rewards = await rewardsAfter(store, profile.id, reviewsBefore);
+    const rewards = review ? await rewardFor(store, profile.id, bathroom.id, true) : undefined;
     return send(res, 201, { ...created, rewards });
   }
 
@@ -604,9 +704,12 @@ async function handleApi(req, res, url) {
     if (!point) return send(res, 404, { error: 'bathroom not found' });
     const body = await readJson(req);
     await requirePresence(store, profile.id, point, restroomKeys(point), position(body.here));
-    const review = await store.addReview(parts[2], validateReview(body, profile));
+    const draft = validateReview(body, profile);
+    await checkDailyLimit(store, profile.id);
+    const first = (await store.get(point.id)).reviewCount === 0;
+    const review = await store.addReview(point.id, draft);
     if (!review) return send(res, 404, { error: 'bathroom not found' });
-    return send(res, 201, { ...review, rewards: await rewardsAfter(store, profile.id, reviewsBefore) });
+    return send(res, 201, { ...review, rewards: await rewardFor(store, profile.id, point.id, first) });
   }
 
   return send(res, 405, { error: 'method not allowed' });
@@ -672,7 +775,9 @@ const server = http.createServer(async (req, res) => {
     serveStatic(req, res, url);
   } catch (err) {
     if (err instanceof ValidationError) return send(res, 400, { error: err.message });
-    if (err instanceof HttpError) return send(res, err.status, { error: err.message, ...(err.code && { code: err.code }) });
+    if (err instanceof HttpError) {
+      return send(res, err.status, { error: err.message, ...(err.code && { code: err.code }), ...err.extra });
+    }
     console.error(err);
     if (!res.headersSent) send(res, 500, { error: 'internal error' });
   }
