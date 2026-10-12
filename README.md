@@ -32,6 +32,8 @@ You need a computer (Mac, Windows or Linux) with [Node.js](https://nodejs.org) 1
 
 Changes to the code reload on the phone automatically while `npm run phone` is running.
 
+**Getting updates:** run `npm run update` in this folder. It downloads the latest version from GitHub, copies it over this folder (your saved ratings in `data/db.json` are kept), and installs anything new. Then start the app again with `npm run phone`.
+
 **If the app says "Not connected":** the phone can't reach the server on port 3000 of your computer. Check that both devices are on the same Wi-Fi network (not a guest network), and allow Node.js through your computer's firewall. Expo's `--tunnel` mode only tunnels the app itself, not the server, so use it only with a hosted server (see [Put it online](#put-it-online)).
 
 ### In the app
