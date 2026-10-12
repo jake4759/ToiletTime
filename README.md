@@ -50,12 +50,13 @@ Hosting the server lets the app work anywhere, not just on your home Wi-Fi, and 
 
 On Render's free plan the server sleeps after 15 minutes without visits, so the first request after a quiet period can take up to a minute. Paid plans stay awake.
 
-To point Expo Go at the hosted server instead of your computer:
+To use Expo Go on any network (any Wi-Fi or cellular) with the hosted server, run:
 
 ```bash
-cd mobile
-EXPO_PUBLIC_API_URL=https://toilettime.onrender.com npx expo start
+npm run phone:online
 ```
+
+This uses the server address from `mobile/eas.json`. To use a different address, run `npm run phone:online -- https://your-server.onrender.com`. The first time, Expo may ask to install `@expo/ngrok` for the tunnel; answer **yes**. Your computer still needs to run this command while you use Expo Go, because Expo Go loads the app from it.
 
 ## Install it on your iPhone with TestFlight
 
