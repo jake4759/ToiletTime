@@ -5,10 +5,11 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const children = [
   spawn(process.execPath, ['server.js'], { cwd: root, stdio: 'inherit' }),
-  spawn('npx', ['expo', 'start', ...process.argv.slice(2)], {
+  // npx is a .cmd script on Windows, which Node can only start through a shell.
+  spawn(['npx', 'expo', 'start', ...process.argv.slice(2)].join(' '), {
     cwd: path.join(root, 'mobile'),
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell: true,
   }),
 ];
 
