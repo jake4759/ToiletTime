@@ -10,6 +10,24 @@ const ZIP_URL = `https://github.com/jake4759/ToiletTime/archive/refs/heads/${BRA
 const root = path.join(__dirname, '..');
 const KEEP = new Set(['node_modules', '.git', '.expo']);
 
+/** Extracts a .zip with whatever the system has: tar (Windows 10+, macOS), PowerShell, or unzip. */
+function unzip(file, dest) {
+  const attempts = [
+    ['tar', ['-xf', file, '-C', dest]],
+    ['powershell', ['-NoProfile', '-Command', `Expand-Archive -LiteralPath '${file}' -DestinationPath '${dest}' -Force`]],
+    ['unzip', ['-q', '-o', file, '-d', dest]],
+  ];
+  for (const [cmd, args] of attempts) {
+    try {
+      execFileSync(cmd, args, { stdio: 'ignore' });
+      return;
+    } catch {
+      // try the next tool
+    }
+  }
+  throw new Error('Could not unpack the download. Download the ZIP from GitHub manually instead.');
+}
+
 (async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'toilettime-update-'));
   const zip = path.join(work, 'update.zip');
@@ -20,7 +38,7 @@ const KEEP = new Set(['node_modules', '.git', '.expo']);
   fs.writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
 
   console.log('Unpacking...');
-  execFileSync('tar', ['-xf', zip, '-C', work]); // tar handles .zip on Windows 10+, macOS and Linux
+  unzip(zip, work);
   const top = fs.readdirSync(work).find((n) => fs.statSync(path.join(work, n)).isDirectory());
   if (!top) throw new Error('The download was empty.');
 
