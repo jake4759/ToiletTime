@@ -183,7 +183,7 @@ function loadPlaces() {
   placesTimer = setTimeout(async () => {
     const c = map.getCenter();
     const b = map.getBounds();
-    const half = (d) => Math.min(d / 2, 0.06);
+    const half = (d) => Math.min(d / 2, 0.03);
     const latHalf = half(b.getNorth() - b.getSouth());
     const lngHalf = half(b.getEast() - b.getWest());
     const lng = L.latLng(c.lat, c.lng).wrap().lng;

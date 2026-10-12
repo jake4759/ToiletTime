@@ -19,7 +19,7 @@ import { PLACE_TYPES, type LatLng, type Place, type PlaceType, type Restroom } f
 
 const WORLD: Region = { latitude: 30, longitude: 0, latitudeDelta: 120, longitudeDelta: 180 };
 /** Nearby places load once the map is zoomed in at least this far (degrees of latitude on screen). */
-const PLACES_MAX_DELTA = 0.1;
+const PLACES_MAX_DELTA = 0.08;
 
 const TYPE_ICONS: Record<PlaceType, SymbolName> = {
   public: 'toilet.fill',
@@ -67,6 +67,8 @@ function MapScreen() {
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const placesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const placesRequest = useRef(0);
+  const lastRegion = useRef<Region | null>(null);
+  const [placesStatus, setPlacesStatus] = useState<'idle' | 'loading' | 'failed'>('idle');
 
   const load = useCallback(async () => {
     try {
@@ -103,35 +105,44 @@ function MapScreen() {
     [unratedPlaces, selectedPlaceId],
   );
 
-  const loadPlaces = (region: Region) => {
+  const loadPlaces = (region: Region, attempt = 0) => {
+    lastRegion.current = region;
     if (placesTimer.current) clearTimeout(placesTimer.current);
     if (region.latitudeDelta > PLACES_MAX_DELTA) {
       setZoomedOut(true);
       return;
     }
     setZoomedOut(false);
-    placesTimer.current = setTimeout(async () => {
-      const half = (d: number) => Math.min(d / 2, 0.06);
-      const bbox = {
-        south: Math.max(-90, region.latitude - half(region.latitudeDelta)),
-        north: Math.min(90, region.latitude + half(region.latitudeDelta)),
-        west: Math.max(-180, region.longitude - half(region.longitudeDelta)),
-        east: Math.min(180, region.longitude + half(region.longitudeDelta)),
-      };
-      const request = ++placesRequest.current;
-      try {
-        const result = await api.places(bbox);
-        if (request !== placesRequest.current) return; // a newer map position already asked
-        setPlaces((prev) => {
-          // Keep places already on screen so pins don't flicker while panning.
-          const byId = new Map(prev.map((p) => [p.osmId, p]));
-          for (const p of result.places) byId.set(p.osmId, p);
-          return [...byId.values()].slice(-800);
-        });
-      } catch {
-        // Places are a bonus; rated restrooms still show if this fails.
-      }
-    }, 450);
+    placesTimer.current = setTimeout(
+      async () => {
+        const half = (d: number) => Math.min(d / 2, 0.03);
+        const bbox = {
+          south: Math.max(-90, region.latitude - half(region.latitudeDelta)),
+          north: Math.min(90, region.latitude + half(region.latitudeDelta)),
+          west: Math.max(-180, region.longitude - half(region.longitudeDelta)),
+          east: Math.min(180, region.longitude + half(region.longitudeDelta)),
+        };
+        const request = ++placesRequest.current;
+        setPlacesStatus('loading');
+        try {
+          const result = await api.places(bbox);
+          if (request !== placesRequest.current) return; // a newer map position already asked
+          setPlacesStatus('idle');
+          setPlaces((prev) => {
+            // Keep places already on screen so pins don't flicker while panning.
+            const byId = new Map(prev.map((p) => [p.osmId, p]));
+            for (const p of result.places) byId.set(p.osmId, p);
+            return [...byId.values()].slice(-800);
+          });
+        } catch {
+          if (request !== placesRequest.current) return;
+          // Try once more on our own (OpenStreetMap is sometimes busy), then let the user retry.
+          if (attempt === 0) loadPlaces(region, 1);
+          else setPlacesStatus('failed');
+        }
+      },
+      attempt === 0 ? 450 : 3000,
+    );
   };
 
   const selectRestroom = (id: string | null) => {
@@ -195,7 +206,7 @@ function MapScreen() {
           setSelectedPlaceId(null);
         }}
         onLongPress={(e) => startAdd(e.nativeEvent.coordinate)}
-        onRegionChangeComplete={loadPlaces}
+        onRegionChangeComplete={(region) => loadPlaces(region)}
       >
         {unratedPlaces.map((p) => (
           <PlacePin
@@ -284,13 +295,22 @@ function MapScreen() {
           <RoundButton icon="location.fill" label="My location" onPress={locateMe} />
         </View>
         {!selected && !selectedPlace && !loadError && (
-          <View style={[styles.hint, { backgroundColor: theme.surface }]}>
+          <Pressable
+            disabled={placesStatus !== 'failed' || zoomedOut}
+            onPress={() => lastRegion.current && loadPlaces(lastRegion.current)}
+            style={[styles.hint, { backgroundColor: theme.surface }]}
+          >
+            {placesStatus === 'loading' && !zoomedOut && <ActivityIndicator size="small" />}
             <Text style={[styles.hintText, { color: theme.textSecondary }]}>
               {zoomedOut
                 ? 'Zoom in to see restaurants, stores and restrooms'
-                : 'Tap a place to rate its restroom, or touch and hold to add one'}
+                : placesStatus === 'failed'
+                  ? "Couldn't load nearby places. Tap to retry."
+                  : placesStatus === 'loading'
+                    ? 'Finding nearby places…'
+                    : 'Tap a place to rate its restroom, or touch and hold to add one'}
             </Text>
-          </View>
+          </Pressable>
         )}
       </View>
 
@@ -524,7 +544,16 @@ const styles = StyleSheet.create({
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 16, gap: 10 },
   actionRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   round: { width: 50, height: 50, borderRadius: 25, alignItems: 'center', justifyContent: 'center' },
-  hint: { alignSelf: 'center', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 5, opacity: 0.92 },
+  hint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'center',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    opacity: 0.92,
+  },
   hintText: { fontSize: 13, fontWeight: '500' },
   preview: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 16, padding: 14 },
   previewName: { fontSize: 17, fontWeight: '600' },

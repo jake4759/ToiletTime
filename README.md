@@ -128,7 +128,7 @@ For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/places?south=&west=&north=&east=` | Unrated businesses and mapped restrooms in an area (at most about 13 km across) |
+| `GET` | `/api/places?south=&west=&north=&east=` | Unrated businesses and mapped restrooms in an area (at most about 7 km across) |
 | `GET` | `/api/bathrooms?q=&type=&sort=` | List restrooms with average ratings |
 | `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `review`, optional `osmId` from `/api/places`). Requires sign-in. Rating a place someone already added adds your review to it. |
 | `GET` | `/api/bathrooms/:id` | Restroom details and all reviews |

@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Modal, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ApiError, api } from '../api';
@@ -106,7 +106,12 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
   const openDirections = () => {
     if (!detail) return;
     const q = encodeURIComponent(detail.name);
-    Linking.openURL(`https://maps.apple.com/?daddr=${detail.lat},${detail.lng}&q=${q}`);
+    const at = `${detail.lat},${detail.lng}`;
+    Linking.openURL(
+      Platform.OS === 'ios'
+        ? `https://maps.apple.com/?daddr=${at}&q=${q}`
+        : `https://www.google.com/maps/dir/?api=1&destination=${at}`,
+    );
   };
 
   const header = writing ? (

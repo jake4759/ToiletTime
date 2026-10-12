@@ -15,11 +15,47 @@ import {
 
 import { formatRating, ratingColor, useTheme } from '../theme';
 
-export type SymbolName = SymbolViewProps['name'];
+/** An SF Symbol name (iOS). Android draws the matching Material Symbol from ANDROID_ICONS. */
+export type SymbolName = Extract<SymbolViewProps['name'], string>;
+
+const ANDROID_ICONS: Partial<Record<SymbolName, AndroidName>> = {
+  magnifyingglass: 'search',
+  'location.fill': 'near_me',
+  plus: 'add',
+  'list.bullet': 'format_list_bulleted',
+  'person.crop.circle': 'account_circle',
+  'person.fill': 'person',
+  'star.fill': 'star',
+  checkmark: 'check',
+  'checkmark.circle.fill': 'check_circle',
+  'xmark.circle': 'cancel',
+  'chevron.right': 'chevron_right',
+  'wifi.exclamationmark': 'wifi_off',
+  'arrow.triangle.turn.up.right.diamond.fill': 'directions',
+  'square.and.pencil': 'rate_review',
+  'toilet.fill': 'wc',
+  'fork.knife': 'restaurant',
+  'cup.and.saucer.fill': 'local_cafe',
+  'bag.fill': 'shopping_bag',
+  'building.2.fill': 'storefront',
+  'fuelpump.fill': 'local_gas_station',
+  'wineglass.fill': 'local_bar',
+  'bed.double.fill': 'hotel',
+  mappin: 'place',
+  'camera.fill': 'photo_camera',
+  trash: 'delete',
+  envelope: 'mail',
+  'lock.fill': 'lock',
+  'checkmark.seal.fill': 'verified',
+  pencil: 'edit',
+};
+type AndroidName = Extract<Exclude<SymbolViewProps['name'], string>['android'], string>;
+
+const symbol = (name: SymbolName): SymbolViewProps['name'] => ({ ios: name, android: ANDROID_ICONS[name] ?? 'circle' });
 
 export function Icon({ name, size = 17, color }: { name: SymbolName; size?: number; color?: string }) {
   const theme = useTheme();
-  return <SymbolView name={name} size={size} tintColor={color ?? theme.text} weight="medium" />;
+  return <SymbolView name={symbol(name)} size={size} tintColor={color ?? theme.text} weight="medium" />;
 }
 
 export function Stars({ value, size = 12 }: { value: number | null; size?: number }) {
@@ -28,7 +64,12 @@ export function Stars({ value, size = 12 }: { value: number | null; size?: numbe
   return (
     <View style={styles.row} accessibilityLabel={value == null ? 'No rating' : `${value} out of 5 stars`}>
       {[1, 2, 3, 4, 5].map((n) => (
-        <SymbolView key={n} name="star.fill" size={size} tintColor={n <= filled ? theme.star : theme.starOff} />
+        <SymbolView
+          key={n}
+          name={symbol('star.fill')}
+          size={size}
+          tintColor={n <= filled ? theme.star : theme.starOff}
+        />
       ))}
     </View>
   );
@@ -50,7 +91,7 @@ export function StarInput({ label, value, onChange }: { label: string; value: nu
             }}
             style={styles.starButton}
           >
-            <SymbolView name="star.fill" size={26} tintColor={n <= value ? theme.star : theme.starOff} />
+            <SymbolView name={symbol('star.fill')} size={26} tintColor={n <= value ? theme.star : theme.starOff} />
           </Pressable>
         ))}
       </View>

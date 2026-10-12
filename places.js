@@ -1,11 +1,18 @@
 // Businesses and mapped restrooms from OpenStreetMap (via the Overpass API), so places
 // show up on the map before anyone has rated them.
 
-const overpassUrl = () => process.env.OVERPASS_URL || 'https://overpass-api.de/api/interpreter';
+// Public Overpass servers; the first that answers wins. OVERPASS_URL can list others (comma-separated).
+const DEFAULT_SERVERS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+];
+const overpassServers = () =>
+  process.env.OVERPASS_URL ? process.env.OVERPASS_URL.split(',').map((u) => u.trim()).filter(Boolean) : DEFAULT_SERVERS;
 const USER_AGENT = 'ToiletTime/1.0 (+https://github.com/jake4759/ToiletTime)';
 
 /** Largest area (in degrees of latitude/longitude) we ask Overpass about in one go. */
-const MAX_SPAN = 0.12;
+const MAX_SPAN = 0.065;
 const MAX_RESULTS = 400;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const CACHE_MAX = 300;
@@ -41,7 +48,7 @@ const alternation = (obj) => Object.keys(obj).join('|');
 
 function buildQuery({ south, west, north, east }) {
   const bbox = `${south},${west},${north},${east}`;
-  return `[out:json][timeout:20];
+  return `[out:json][timeout:25];
 (
   nwr["amenity"~"^(${alternation(AMENITY_TYPES)})$"](${bbox});
   nwr["shop"~"^(${alternation(SHOP_TYPES)})$"](${bbox});
@@ -121,31 +128,61 @@ function snap(b) {
   return { south: down(b.south), west: down(b.west), north: up(b.north), east: up(b.east) };
 }
 
+const inFlight = new Map(); // key -> Promise, so identical lookups share one request
+let queue = Promise.resolve(); // Overpass allows only a couple of requests per client at once
+
+/** Runs `task` after every earlier queued task has finished. */
+function enqueue(task) {
+  const run = queue.then(task, task);
+  queue = run.catch(() => {});
+  return run;
+}
+
+async function queryServer(url, query) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': USER_AGENT },
+      body: new URLSearchParams({ data: query }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`${new URL(url).host} responded ${res.status}`);
+    return (await res.json()).elements;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Tries each Overpass server in turn until one answers. */
+async function queryOverpass(query) {
+  const errors = [];
+  for (const url of overpassServers()) {
+    try {
+      return await queryServer(url, query);
+    } catch (err) {
+      errors.push(err.name === 'AbortError' ? `${url} timed out` : err.message);
+    }
+  }
+  throw new Error(`No OpenStreetMap server answered: ${errors.join('; ')}`);
+}
+
 async function fetchPlaces(bbox) {
   const area = snap(bbox);
   const key = `${area.south},${area.west},${area.north},${area.east}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.places;
+  if (inFlight.has(key)) return inFlight.get(key);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25_000);
-  let res;
-  try {
-    res = await fetch(overpassUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': USER_AGENT },
-      body: new URLSearchParams({ data: buildQuery(area) }),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!res.ok) throw new Error(`Overpass responded ${res.status}`);
-  const places = parsePlaces((await res.json()).elements);
-
-  cache.set(key, { at: Date.now(), places });
-  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
-  return places;
+  const lookup = enqueue(async () => {
+    const places = parsePlaces(await queryOverpass(buildQuery(area)));
+    cache.set(key, { at: Date.now(), places });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return places;
+  }).finally(() => inFlight.delete(key));
+  inFlight.set(key, lookup);
+  return lookup;
 }
 
 /** Validates ?south=&west=&north=&east= and returns the bbox, or null if it's too large. */

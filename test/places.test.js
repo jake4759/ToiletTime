@@ -17,13 +17,27 @@ const elements = [
   { type: 'node', id: 6, lat: 28.421, lon: -81.584, tags: { amenity: 'bench', name: 'Not a place' } },
 ];
 let overpassHits = 0;
+let busyHits = 0;
+let active = 0;
+let maxActive = 0;
+// A server that is always busy, to check that lookups fall back to the next one.
+const busy = http.createServer((req, res) => {
+  busyHits++;
+  req.resume();
+  res.writeHead(429).end('rate limited');
+});
 const overpass = http.createServer((req, res) => {
   overpassHits++;
+  active++;
+  maxActive = Math.max(maxActive, active);
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     assert.match(decodeURIComponent(body), /amenity/);
-    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ elements }));
+    setTimeout(() => {
+      active--;
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ elements }));
+    }, 30);
   });
 });
 
@@ -33,13 +47,15 @@ const { server, storeReady } = require('../server');
 let base;
 before(async () => {
   await new Promise((r) => overpass.listen(0, r));
-  process.env.OVERPASS_URL = `http://127.0.0.1:${overpass.address().port}/api/interpreter`;
+  await new Promise((r) => busy.listen(0, r));
+  process.env.OVERPASS_URL = [busy, overpass].map((s) => `http://127.0.0.1:${s.address().port}/api/interpreter`).join(',');
   await new Promise((r) => server.listen(0, r));
   base = `http://localhost:${server.address().port}`;
 });
 after(async () => {
   await new Promise((r) => server.close(r));
   await new Promise((r) => overpass.close(r));
+  await new Promise((r) => busy.close(r));
   await (await storeReady).close();
 });
 
@@ -75,6 +91,14 @@ test('places endpoint: validates the area, asks to zoom in, and caches lookups',
   assert.strictEqual(first.places.length, 3);
   await fetch(`${base}/api/places?${area}`);
   assert.strictEqual(overpassHits, 1);
+  assert.strictEqual(busyHits, 1, 'tried the busy server first, then fell back');
+});
+
+test('lookups for different areas go to Overpass one at a time', async () => {
+  const areas = [0, 1, 2, 3].map((i) => `south=${40 + i * 0.1}&west=-97.8&north=${40.05 + i * 0.1}&east=-97.75`);
+  const results = await Promise.all(areas.map((a) => fetch(`${base}/api/places?${a}`).then((r) => r.json())));
+  assert.ok(results.every((r) => r.places.length === 3));
+  assert.strictEqual(maxActive, 1);
 });
 
 test('rating a map place twice keeps a single restroom', async () => {
