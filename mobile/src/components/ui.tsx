@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -147,12 +147,17 @@ export function Separator({ inset = 16 }: { inset?: number }) {
   return <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: theme.separator, marginLeft: inset }} />;
 }
 
-export function Field({ label, ...props }: TextInputProps & { label: string }) {
+export function Field({ label, ref, ...props }: TextInputProps & { label: string; ref?: Ref<TextInput> }) {
   const theme = useTheme();
   return (
     <View style={styles.field}>
       <Text style={[styles.fieldLabel, { color: theme.text }]}>{label}</Text>
-      <TextInput placeholderTextColor={theme.muted} style={[styles.fieldInput, { color: theme.text }]} {...props} />
+      <TextInput
+        ref={ref}
+        placeholderTextColor={theme.muted}
+        style={[styles.fieldInput, { color: theme.text }]}
+        {...props}
+      />
     </View>
   );
 }

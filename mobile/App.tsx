@@ -7,8 +7,10 @@ import MapView, { Marker, type Region } from 'react-native-maps';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { API_URL, IS_HOSTED_API, api } from './src/api';
+import { AuthProvider, useAuth } from './src/auth';
 import { Button, Icon, ScorePill, Stars, type SymbolName } from './src/components/ui';
 import { distanceMeters, formatDistance } from './src/geo';
+import { AccountSheet } from './src/screens/AccountSheet';
 import { AddSheet } from './src/screens/AddSheet';
 import { DetailSheet } from './src/screens/DetailSheet';
 import { ListSheet } from './src/screens/ListSheet';
@@ -20,7 +22,9 @@ const WORLD: Region = { latitude: 30, longitude: 0, latitudeDelta: 120, longitud
 export default function App() {
   return (
     <SafeAreaProvider>
-      <MapScreen />
+      <AuthProvider>
+        <MapScreen />
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
@@ -40,6 +44,9 @@ function MapScreen() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [addCoords, setAddCoords] = useState<LatLng | null>(null);
   const pendingDetail = useRef<string | null>(null);
+  const { user } = useAuth();
+  const [account, setAccount] = useState<{ open: boolean; reason: string | null }>({ open: false, reason: null });
+  const addAfterSignIn = useRef<LatLng | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -85,10 +92,12 @@ function MapScreen() {
 
   const startAdd = async (coords?: LatLng) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (coords) return setAddCoords(coords);
-    if (userLocation) return setAddCoords(userLocation);
-    const camera = await mapRef.current?.getCamera();
-    setAddCoords(camera?.center ?? { latitude: WORLD.latitude, longitude: WORLD.longitude });
+    const camera = coords || userLocation ? null : await mapRef.current?.getCamera();
+    const target = coords ?? userLocation ?? camera?.center ?? { latitude: WORLD.latitude, longitude: WORLD.longitude };
+    if (user) return setAddCoords(target);
+    // Ask the user to sign in first, then continue to the add sheet.
+    addAfterSignIn.current = target;
+    setAccount({ open: true, reason: 'Sign in to add a restroom. It only takes a moment.' });
   };
 
   return (
@@ -134,6 +143,22 @@ function MapScreen() {
           ) : (
             <Text style={[styles.count, { color: theme.muted }]}>{restrooms.length}</Text>
           )}
+          <View style={[styles.divider, { backgroundColor: theme.separator }]} />
+          <Pressable
+            onPress={() => setAccount({ open: true, reason: null })}
+            hitSlop={8}
+            accessibilityLabel={user ? `Account, signed in as ${user.name}` : 'Sign in'}
+          >
+            {user ? (
+              <View style={[styles.miniAvatar, { backgroundColor: theme.brandSoft }]}>
+                <Text style={[styles.miniAvatarText, { color: theme.brand }]}>
+                  {user.name.slice(0, 1).toUpperCase()}
+                </Text>
+              </View>
+            ) : (
+              <Icon name="person.crop.circle" size={26} color={theme.brand} />
+            )}
+          </Pressable>
         </Pressable>
 
         {loadError && (
@@ -194,6 +219,18 @@ function MapScreen() {
       />
 
       <DetailSheet id={detailId} origin={userLocation} onClose={() => setDetailId(null)} onChanged={load} />
+
+      <AccountSheet
+        visible={account.open}
+        reason={account.reason}
+        onClose={() => setAccount((a) => ({ ...a, open: false }))}
+        onDismiss={() => {
+          // Continue to the add sheet once the account sheet has finished closing.
+          const target = addAfterSignIn.current;
+          addAfterSignIn.current = null;
+          if (target && user) setAddCoords(target);
+        }}
+      />
 
       <AddSheet
         coords={addCoords}
@@ -312,6 +349,9 @@ const styles = StyleSheet.create({
   },
   searchText: { flex: 1, fontSize: 17 },
   count: { fontSize: 15, fontVariant: ['tabular-nums'] },
+  divider: { width: StyleSheet.hairlineWidth, height: 24 },
+  miniAvatar: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  miniAvatarText: { fontSize: 13, fontWeight: '700' },
   banner: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, padding: 14 },
   bannerTitle: { fontSize: 15, fontWeight: '600' },
   bannerText: { fontSize: 13, marginTop: 2 },

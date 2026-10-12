@@ -1,13 +1,15 @@
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { api } from '../api';
+import { ApiError, api } from '../api';
+import { useAuth } from '../auth';
 import { ReviewFields, isReviewComplete } from '../components/ReviewFields';
 import { Button, Icon, Separator, SheetHeader, Stars, type SymbolName } from '../components/ui';
 import { distanceMeters, formatDistance } from '../geo';
 import { formatRating, plural, useTheme } from '../theme';
+import { AccountSheet } from './AccountSheet';
 import { PLACE_TYPES, emptyReview, type LatLng, type RestroomDetail, type Review } from '../types';
 
 interface Props {
@@ -37,6 +39,31 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
   const [writing, setWriting] = useState(false);
   const [draft, setDraft] = useState(emptyReview);
   const [submitting, setSubmitting] = useState(false);
+  const { user, expire } = useAuth();
+  const [accountOpen, setAccountOpen] = useState(false);
+  const writeAfterSignIn = useRef(false);
+  const myReview = user ? detail?.reviews.find((r) => r.userId === user.id) : undefined;
+
+  const beginWriting = () => {
+    setDraft(
+      myReview
+        ? {
+            overall: myReview.overall,
+            cleanliness: myReview.cleanliness,
+            supplies: myReview.supplies,
+            privacy: myReview.privacy,
+            comment: myReview.comment,
+          }
+        : emptyReview(),
+    );
+    setWriting(true);
+  };
+
+  const startReview = () => {
+    if (user) return beginWriting();
+    writeAfterSignIn.current = true;
+    setAccountOpen(true);
+  };
 
   const load = useCallback(
     () =>
@@ -64,7 +91,13 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
       await load();
       onChanged();
     } catch (e) {
-      Alert.alert("Couldn't post review", (e as Error).message);
+      if (e instanceof ApiError && e.status === 401) {
+        await expire();
+        setWriting(false);
+        Alert.alert('Please sign in again', 'Your session has ended. Sign in to post your review.');
+      } else {
+        Alert.alert("Couldn't post review", (e as Error).message);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -78,7 +111,7 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
 
   const header = writing ? (
     <SheetHeader
-      title="Write a Review"
+      title={myReview ? 'Edit Your Review' : 'Write a Review'}
       left={{ label: 'Cancel', onPress: () => setWriting(false) }}
       right={{ label: 'Post', onPress: submit, bold: true, disabled: !isReviewComplete(draft), loading: submitting }}
     />
@@ -123,10 +156,10 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
               style={styles.flex}
             />
             <Button
-              title="Review"
+              title={myReview ? 'Edit Review' : 'Review'}
               icon="square.and.pencil"
               variant="secondary"
-              onPress={() => setWriting(true)}
+              onPress={startReview}
               style={styles.flex}
             />
           </View>
@@ -146,12 +179,21 @@ function DetailContent({ id, origin, onClose, onChanged }: Props & { id: string 
             detail.reviews.map((r, i) => (
               <View key={r.id}>
                 {i > 0 && <Separator inset={0} />}
-                <ReviewItem review={r} />
+                <ReviewItem review={r} mine={!!user && r.userId === user.id} />
               </View>
             ))
           )}
         </ScrollView>
       )}
+      <AccountSheet
+        visible={accountOpen}
+        reason="Sign in to rate this restroom. Your review is saved to your account."
+        onClose={() => setAccountOpen(false)}
+        onDismiss={() => {
+          if (writeAfterSignIn.current && user) beginWriting();
+          writeAfterSignIn.current = false;
+        }}
+      />
     </View>
   );
 }
@@ -210,7 +252,7 @@ function Amenity({ on, yes, no }: { on: boolean; yes: string; no: string }) {
   );
 }
 
-function ReviewItem({ review }: { review: Review }) {
+function ReviewItem({ review, mine }: { review: Review; mine: boolean }) {
   const theme = useTheme();
   const initials = review.author
     .split(/\s+/)
@@ -230,7 +272,10 @@ function ReviewItem({ review }: { review: Review }) {
           <Text style={[styles.avatarText, { color: theme.brand }]}>{initials}</Text>
         </View>
         <View style={styles.flex}>
-          <Text style={[styles.reviewAuthor, { color: theme.text }]}>{review.author}</Text>
+          <Text style={[styles.reviewAuthor, { color: theme.text }]}>
+            {review.author}
+            {mine && <Text style={{ color: theme.brand }}> · You</Text>}
+          </Text>
           <Text style={[styles.small, { color: theme.muted }]}>{date}</Text>
         </View>
         <Stars value={review.overall} />

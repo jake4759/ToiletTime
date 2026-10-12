@@ -11,6 +11,7 @@ ToiletTime has a native iPhone app (`mobile/`, built with Expo and React Native)
 - **Detailed ratings.** Reviews score overall experience, cleanliness, supplies and privacy, with an optional written review.
 - **Search and filter.** Filter by name, city, country or place type, and sort by rating, review count or date added.
 - **Amenities.** Each listing notes whether it is free to use, wheelchair accessible and has a baby changing station.
+- **Accounts.** Anyone can browse; adding restrooms and reviews needs a free account (email and password). Reviews show the account's name, and rating the same place again updates your earlier review. Accounts can be deleted from the app; their reviews stay without the name.
 - Light and dark themes, and a responsive layout for phones.
 
 ## Run it on your iPhone
@@ -58,6 +59,12 @@ npm run phone:online
 
 This uses the server address from `mobile/eas.json`. To use a different address, run `npm run phone:online -- https://your-server.onrender.com`. The first time, Expo may ask to install `@expo/ngrok` for the tunnel; answer **yes**. Your computer still needs to run this command while you use Expo Go, because Expo Go loads the app from it.
 
+## Share it with friends and family
+
+1. **Put the server online** (above). Accounts, restrooms and reviews then live in the online database, so they're kept through every app update and shared by everyone.
+2. **Publish the app with TestFlight** (below). In App Store Connect, create an **External Testing** group with a **public link**, and send that link to your friends and family. The first build goes through a short Apple beta review, usually about a day.
+3. **Ship updates** by running `npm run ios:testflight` again. Testers get the update in the TestFlight app, and everyone stays signed in with their data intact.
+
 ## Install it on your iPhone with TestFlight
 
 This gives you ToiletTime as a real app with its own Home Screen icon, with no computer needed once it's installed. You can also invite up to 100 people to test it.
@@ -102,6 +109,7 @@ npm test    # API tests
 | `DB_FILE` | `data/db.json` | Where ratings are stored when `DATABASE_URL` isn't set. Created on first write, starting from `data/seed.json`. |
 | `TRUST_PROXY` | none | Set to `1` behind a proxy such as Render's, so the per-client submission limit uses the real client address. |
 | `WRITE_LIMIT` | `30` | Maximum new restrooms and reviews per client every 10 minutes. |
+| `AUTH_LIMIT` | `20` | Maximum sign-in and sign-up attempts per client every 10 minutes. |
 
 For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 
@@ -111,9 +119,16 @@ For the mobile app, run `npm run lint` and `npm run typecheck` in `mobile/`.
 | --- | --- | --- |
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/bathrooms?q=&type=&sort=` | List restrooms with average ratings |
-| `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `review`) |
+| `POST` | `/api/bathrooms` | Add a restroom (`name`, `lat`, `lng`, optional `review`). Requires sign-in. |
 | `GET` | `/api/bathrooms/:id` | Restroom details and all reviews |
-| `POST` | `/api/bathrooms/:id/reviews` | Add a review (`overall`, `cleanliness`, `supplies`, `privacy` from 1 to 5, optional `author` and `comment`) |
+| `POST` | `/api/bathrooms/:id/reviews` | Add or update your review (`overall`, `cleanliness`, `supplies`, `privacy` from 1 to 5, optional `comment`). Requires sign-in. |
+| `POST` | `/api/auth/signup` | Create an account (`name`, `email`, `password` of 8+ characters). Returns `{ token, user }`. |
+| `POST` | `/api/auth/login` | Sign in (`email`, `password`). Returns `{ token, user }`. |
+| `GET` | `/api/auth/me` | The signed-in user |
+| `POST` | `/api/auth/logout` | End this session |
+| `DELETE` | `/api/auth/me` | Delete the account; its reviews remain without the name |
+
+Requests that need sign-in send the token as `Authorization: Bearer <token>`. Passwords are hashed with scrypt, and the server stores only a hash of each session token.
 
 ## Third-party services
 

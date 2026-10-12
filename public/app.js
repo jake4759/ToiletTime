@@ -30,18 +30,30 @@ const stars = (r) =>
     .map((n) => icon('star', r != null && n <= Math.round(r) ? 'on' : ''))
     .join('')}</span>`;
 
+// ---------- session ----------
+
+const TOKEN_KEY = 'toilettime.token';
+const storage = {
+  get: () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } },
+  set: (v) => { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch {} },
+};
+let token = storage.get();
+let currentUser = null;
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && token && !path.startsWith('/api/auth/login')) setSession(null);
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
 
 function toast(message) {
+  document.querySelectorAll('.toast').forEach((t) => t.remove());
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = message;
@@ -191,7 +203,6 @@ function reviewFields() {
         </div>`,
       ).join('')}
     </div>
-    <label class="field">Name <input name="author" maxlength="40" placeholder="Optional"></label>
     <label class="field">Review <textarea name="comment" maxlength="1000" placeholder="Cleanliness, availability, anything others should know"></textarea></label>`;
 }
 
@@ -224,6 +235,16 @@ function readStars(root) {
   return out;
 }
 
+function setStars(root, key, value) {
+  const group = root.querySelector(`.star-input[data-key="${key}"]`);
+  if (!group) return;
+  group.dataset.value = String(value);
+  group.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('on', Number(b.dataset.n) <= value);
+    b.setAttribute('aria-checked', String(Number(b.dataset.n) === value));
+  });
+}
+
 // ---------- detail view ----------
 
 function showList() {
@@ -250,6 +271,7 @@ async function openDetail(id, { pan = true } = {}) {
     [b.babyChanging, 'Baby changing station', 'No baby changing station'],
   ];
   const address = [b.address, locality(b)].filter(Boolean).join(', ');
+  const mine = currentUser && b.reviews.find((r) => r.userId === currentUser.id);
 
   $('#detailBody').innerHTML = `
     <div class="meta">${esc(TYPE_LABELS[b.type] || b.type)}</div>
@@ -277,14 +299,14 @@ async function openDetail(id, { pan = true } = {}) {
 
     <div class="section-head">
       <h3>Reviews</h3>
-      <button class="btn" id="writeBtn">Write a review</button>
+      <button class="btn" id="writeBtn">${mine ? 'Edit your review' : 'Write a review'}</button>
     </div>
     <form id="reviewForm" class="review-form" hidden novalidate>
       ${reviewFields()}
       <div class="actions">
         <p class="error" role="alert"></p>
         <button type="button" class="btn" id="cancelReview">Cancel</button>
-        <button type="submit" class="btn btn-primary">Post review</button>
+        <button type="submit" class="btn btn-primary">${mine ? 'Update review' : 'Post review'}</button>
       </div>
     </form>
     <ul class="reviews">
@@ -297,11 +319,16 @@ async function openDetail(id, { pan = true } = {}) {
 
   const form = $('#reviewForm');
   bindStars(form);
-  $('#writeBtn').onclick = () => {
-    form.hidden = false;
-    $('#writeBtn').hidden = true;
-    form.querySelector('.star-input button').focus();
-  };
+  if (mine) {
+    for (const [key] of CATEGORIES) setStars(form, key, mine[key]);
+    form.comment.value = mine.comment;
+  }
+  $('#writeBtn').onclick = () =>
+    requireAccount('Sign in to rate this restroom.', () => {
+      form.hidden = false;
+      $('#writeBtn').hidden = true;
+      form.querySelector('.star-input button').focus();
+    });
   $('#cancelReview').onclick = () => {
     form.hidden = true;
     $('#writeBtn').hidden = false;
@@ -312,11 +339,11 @@ async function openDetail(id, { pan = true } = {}) {
       const fd = new FormData(form);
       await api(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, {
         method: 'POST',
-        body: { ...readStars(form), author: fd.get('author'), comment: fd.get('comment') },
+        body: { ...readStars(form), comment: fd.get('comment') },
       });
       await refresh();
       await openDetail(id, { pan: false });
-      toast('Review posted.');
+      toast(mine ? 'Review updated.' : 'Review posted.');
     } catch (ex) {
       form.querySelector('.error').textContent = ex.message;
     }
@@ -330,7 +357,7 @@ function renderReview(r) {
     <div class="review-top">
       <span class="avatar">${esc(initials)}</span>
       <div>
-        <div class="who">${esc(r.author)}</div>
+        <div class="who">${esc(r.author)}${currentUser && r.userId === currentUser.id ? ' <span class="you">· You</span>' : ''}</div>
         <div class="when">${date}</div>
       </div>
     </div>
@@ -342,6 +369,10 @@ function renderReview(r) {
 // ---------- add dialog ----------
 
 function openAddDialog(latlng) {
+  requireAccount('Sign in to add a restroom.', () => showAddDialog(latlng));
+}
+
+function showAddDialog(latlng) {
   const form = $('#addForm');
   form.reset();
   $('#addError').textContent = '';
@@ -442,7 +473,7 @@ $('#addForm').addEventListener('submit', async (e) => {
   const fd = new FormData(form);
   try {
     if (!String(fd.get('name')).trim()) throw new Error('Business name is required.');
-    const review = { ...readStars($('#addRating')), author: fd.get('author'), comment: fd.get('comment') };
+    const review = { ...readStars($('#addRating')), comment: fd.get('comment') };
     const created = await api('/api/bathrooms', {
       method: 'POST',
       body: {
@@ -470,12 +501,131 @@ $('#addForm').addEventListener('submit', async (e) => {
 
 document.querySelectorAll('[data-close]').forEach((btn) => btn.addEventListener('click', () => btn.closest('dialog').close()));
 
+// ---------- accounts ----------
+
+let afterSignIn = null;
+let authMode = 'signIn';
+
+const initials = (name) => name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+
+function setSession(session) {
+  token = session ? session.token : null;
+  currentUser = session ? session.user : null;
+  storage.set(token);
+  renderAccountButton();
+}
+
+function renderAccountButton() {
+  const btn = $('#accountBtn');
+  if (currentUser) {
+    btn.innerHTML = `<span class="avatar">${esc(initials(currentUser.name))}</span><span id="accountLabel">${esc(currentUser.name.split(' ')[0])}</span>`;
+    btn.setAttribute('aria-label', `Account, signed in as ${currentUser.name}`);
+  } else {
+    btn.innerHTML = `${icon('user')}<span id="accountLabel">Sign in</span>`;
+    btn.setAttribute('aria-label', 'Sign in');
+  }
+}
+
+/** Runs `action` now if signed in, otherwise after the user signs in. */
+function requireAccount(reason, action) {
+  if (currentUser) return action();
+  afterSignIn = action;
+  openAuth(reason);
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const signUp = mode === 'signUp';
+  $('#authTitle').textContent = signUp ? 'Create an account' : 'Sign in';
+  $('#authSubmit').textContent = signUp ? 'Create account' : 'Sign in';
+  $('#nameField').hidden = !signUp;
+  $('#authSwitchText').textContent = signUp ? 'Already have an account?' : 'New to ToiletTime?';
+  $('#authSwitch').textContent = signUp ? 'Sign in' : 'Create an account';
+  $('#authForm').password.autocomplete = signUp ? 'new-password' : 'current-password';
+  $('#authForm').password.placeholder = signUp ? 'At least 8 characters' : '';
+  $('#authError').textContent = '';
+}
+
+function openAuth(reason) {
+  $('#authForm').reset();
+  setAuthMode('signIn');
+  $('#authReason').textContent = reason || 'Sign in to rate restrooms and add new ones.';
+  $('#authDialog').showModal();
+}
+
+$('#authSwitch').addEventListener('click', () => setAuthMode(authMode === 'signIn' ? 'signUp' : 'signIn'));
+$('#authDialog').addEventListener('close', () => {
+  if (!currentUser) afterSignIn = null;
+});
+
+$('#authForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const signUp = authMode === 'signUp';
+  try {
+    const session = await api(signUp ? '/api/auth/signup' : '/api/auth/login', {
+      method: 'POST',
+      body: { name: fd.get('name'), email: fd.get('email'), password: fd.get('password') },
+    });
+    setSession(session);
+    $('#authDialog').close();
+    toast(signUp ? `Welcome, ${session.user.name}!` : `Signed in as ${session.user.name}.`);
+    const next = afterSignIn;
+    afterSignIn = null;
+    if (next) next();
+    else if (!$('#detailView').hidden && activeId) openDetail(activeId, { pan: false });
+  } catch (err) {
+    $('#authError').textContent = err.message;
+  }
+});
+
+$('#accountBtn').addEventListener('click', () => {
+  if (!currentUser) return openAuth();
+  $('#accountAvatar').textContent = initials(currentUser.name);
+  $('#accountName').textContent = currentUser.name;
+  $('#accountEmail').textContent = currentUser.email;
+  $('#accountSince').textContent = `Member since ${new Date(currentUser.createdAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`;
+  $('#accountDialog').showModal();
+});
+
+$('#signOutBtn').addEventListener('click', async () => {
+  await api('/api/auth/logout', { method: 'POST', body: {} }).catch(() => {});
+  setSession(null);
+  $('#accountDialog').close();
+  toast('Signed out.');
+  if (!$('#detailView').hidden && activeId) openDetail(activeId, { pan: false });
+});
+
+$('#deleteAccountBtn').addEventListener('click', async () => {
+  const ok = confirm('Delete your account? This cannot be undone. Your reviews stay on ToiletTime without your name.');
+  if (!ok) return;
+  try {
+    await api('/api/auth/me', { method: 'DELETE' });
+    setSession(null);
+    $('#accountDialog').close();
+    toast('Your account was deleted.');
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+async function restoreSession() {
+  if (!token) return renderAccountButton();
+  try {
+    const { user } = await api('/api/auth/me');
+    setSession({ token, user });
+  } catch {
+    renderAccountButton();
+  }
+}
+
 // ---------- init ----------
 
 (async function init() {
   const options = Object.entries(TYPE_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
   $('#typeFilter').insertAdjacentHTML('beforeend', options);
   $('#addType').innerHTML = options;
+  await restoreSession();
   try {
     await refresh();
   } catch (err) {

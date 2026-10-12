@@ -34,6 +34,7 @@ export interface Restroom {
 
 export interface Review {
   id: string;
+  userId: string | null;
   author: string;
   overall: number;
   cleanliness: number;
@@ -52,7 +53,6 @@ export interface ReviewDraft {
   cleanliness: number;
   supplies: number;
   privacy: number;
-  author: string;
   comment: string;
 }
 
@@ -87,6 +87,12 @@ export const emptyReview = (): ReviewDraft => ({
   cleanliness: 0,
   supplies: 0,
   privacy: 0,
-  author: '',
   comment: '',
 });
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  createdAt: string;
+}

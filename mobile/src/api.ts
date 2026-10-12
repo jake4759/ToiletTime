@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 
-import type { NewRestroom, PlaceType, Restroom, RestroomDetail, Review, ReviewDraft } from './types';
+import type { NewRestroom, PlaceType, Restroom, RestroomDetail, Review, ReviewDraft, User } from './types';
 
 /**
  * Where the ToiletTime server lives. Set EXPO_PUBLIC_API_URL for a deployed server;
@@ -16,28 +16,61 @@ function resolveApiUrl(): string {
 export const API_URL = resolveApiUrl();
 export const IS_HOSTED_API = !!process.env.EXPO_PUBLIC_API_URL;
 
-async function request<T>(path: string, body?: unknown): Promise<T> {
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+let authToken: string | null = null;
+
+/** Token sent with every request once the user is signed in (managed by AuthProvider). */
+export function setAuthToken(token: string | null) {
+  authToken = token;
+}
+
+async function request<T>(path: string, options: { method?: string; body?: unknown; token?: string } = {}): Promise<T> {
+  const { body, method = body === undefined ? 'GET' : 'POST' } = options;
+  const token = options.token ?? authToken;
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, {
-      method: body ? 'POST' : 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
-    throw new Error("Can't reach the ToiletTime server. Check your internet connection.");
+    throw new ApiError("Can't reach the ToiletTime server. Check your internet connection.", 0);
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status);
   return data as T;
+}
+
+interface Session {
+  token: string;
+  user: User;
 }
 
 export const api = {
   list: () => request<{ bathrooms: Restroom[] }>('/api/bathrooms').then((d) => d.bathrooms),
   get: (id: string) => request<RestroomDetail>(`/api/bathrooms/${encodeURIComponent(id)}`),
-  create: (restroom: NewRestroom) => request<RestroomDetail>('/api/bathrooms', restroom),
+  create: (restroom: NewRestroom) => request<RestroomDetail>('/api/bathrooms', { body: restroom }),
   review: (id: string, review: ReviewDraft) =>
-    request<Review>(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, review),
+    request<Review>(`/api/bathrooms/${encodeURIComponent(id)}/reviews`, { body: review }),
+
+  signUp: (name: string, email: string, password: string) =>
+    request<Session>('/api/auth/signup', { body: { name, email, password } }),
+  signIn: (email: string, password: string) => request<Session>('/api/auth/login', { body: { email, password } }),
+  me: (token: string) => request<{ user: User }>('/api/auth/me', { token }).then((d) => d.user),
+  signOut: () => request<{ ok: true }>('/api/auth/logout', { body: {} }),
+  deleteAccount: () => request<{ ok: true }>('/api/auth/me', { method: 'DELETE' }),
 };
 
 // ---------- place search (OpenStreetMap Nominatim) ----------

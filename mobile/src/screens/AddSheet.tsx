@@ -16,7 +16,8 @@ import {
 import MapView, { Marker } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { api, searchPlaces, type PlaceResult } from '../api';
+import { ApiError, api, searchPlaces, type PlaceResult } from '../api';
+import { useAuth } from '../auth';
 import { ReviewFields, isReviewComplete } from '../components/ReviewFields';
 import { Chip, Field, Icon, Section, Separator, SheetHeader } from '../components/ui';
 import { useTheme } from '../theme';
@@ -66,6 +67,7 @@ function AddForm({ start, onClose, onCreated }: Omit<Props, 'coords'> & { start:
   const [results, setResults] = useState<PlaceResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const { expire } = useAuth();
   const trimmedQuery = query.trim();
   const visibleResults = trimmedQuery.length >= 3 ? results : [];
 
@@ -133,6 +135,12 @@ function AddForm({ start, onClose, onCreated }: Omit<Props, 'coords'> & { start:
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       onCreated(created);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        await expire();
+        Alert.alert('Please sign in again', 'Your session has ended. Sign in, then add the restroom again.');
+        onClose();
+        return;
+      }
       Alert.alert("Couldn't add restroom", (e as Error).message);
     } finally {
       setSubmitting(false);

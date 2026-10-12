@@ -3,7 +3,7 @@ import { StyleSheet, TextInput, View } from 'react-native';
 
 import { useTheme } from '../theme';
 import { RATING_CATEGORIES, type ReviewDraft } from '../types';
-import { Field, Section, Separator, StarInput } from './ui';
+import { Section, Separator, StarInput } from './ui';
 
 export const isReviewComplete = (r: ReviewDraft) => RATING_CATEGORIES.every(([key]) => r[key] > 0);
 
@@ -21,15 +21,7 @@ export function ReviewFields({ value, onChange }: { value: ReviewDraft; onChange
           </Fragment>
         ))}
       </Section>
-      <Section title="Review">
-        <Field
-          label="Name"
-          placeholder="Optional"
-          value={value.author}
-          onChangeText={(t) => set('author', t)}
-          maxLength={40}
-        />
-        <Separator />
+      <Section title="Review" footer="Your review is posted with your account name.">
         <View style={styles.commentWrap}>
           <TextInput
             multiline

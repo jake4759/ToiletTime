@@ -34,30 +34,136 @@ storeReady.catch((err) => {
   process.exit(1);
 });
 
-// Simple per-client limit on writes, so one client can't flood the public server.
-const WRITE_LIMIT = Number(process.env.WRITE_LIMIT) || 30;
-const WRITE_WINDOW_MS = 10 * 60 * 1000;
-const writes = new Map();
+// Simple per-client rate limits, so one client can't flood the public server.
+const WINDOW_MS = 10 * 60 * 1000;
+const limiters = [];
 
 function clientIp(req) {
   const forwarded = process.env.TRUST_PROXY && req.headers['x-forwarded-for'];
   return (forwarded ? forwarded.split(',')[0] : req.socket.remoteAddress || '').trim();
 }
 
-function allowWrite(req) {
-  const now = Date.now();
-  const ip = clientIp(req);
-  const recent = (writes.get(ip) || []).filter((t) => now - t < WRITE_WINDOW_MS);
-  if (recent.length >= WRITE_LIMIT) return false;
-  recent.push(now);
-  writes.set(ip, recent);
-  return true;
+function rateLimiter(limit) {
+  const hits = new Map();
+  limiters.push(hits);
+  return (req) => {
+    const now = Date.now();
+    const ip = clientIp(req);
+    const recent = (hits.get(ip) || []).filter((t) => now - t < WINDOW_MS);
+    if (recent.length >= limit) return false;
+    recent.push(now);
+    hits.set(ip, recent);
+    return true;
+  };
 }
+
+const allowWrite = rateLimiter(Number(process.env.WRITE_LIMIT) || 30);
+const allowAuthAttempt = rateLimiter(Number(process.env.AUTH_LIMIT) || 20);
 
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, times] of writes) if (times.every((t) => now - t >= WRITE_WINDOW_MS)) writes.delete(ip);
-}, WRITE_WINDOW_MS).unref();
+  for (const hits of limiters) {
+    for (const [ip, times] of hits) if (times.every((t) => now - t >= WINDOW_MS)) hits.delete(ip);
+  }
+}, WINDOW_MS).unref();
+
+// ---------- accounts ----------
+
+const scrypt = (password, salt) =>
+  new Promise((resolve, reject) =>
+    crypto.scrypt(password, salt, 64, (err, key) => (err ? reject(err) : resolve(key))),
+  );
+
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  return `scrypt$${salt.toString('hex')}$${(await scrypt(password, salt)).toString('hex')}`;
+}
+
+async function verifyPassword(password, stored) {
+  const [scheme, salt, hash] = String(stored).split('$');
+  if (scheme !== 'scrypt' || !salt || !hash) return false;
+  const expected = Buffer.from(hash, 'hex');
+  const actual = await scrypt(password, Buffer.from(salt, 'hex'));
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, createdAt: u.createdAt });
+
+async function startSession(store, user) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await store.createSession({ tokenHash: hashToken(token), userId: user.id, createdAt: new Date().toISOString() });
+  return { token, user: publicUser(user) };
+}
+
+function bearerToken(req) {
+  const match = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization || '');
+  return match ? match[1] : null;
+}
+
+async function currentUser(store, req) {
+  const token = bearerToken(req);
+  return token ? store.findSessionUser(hashToken(token)) : null;
+}
+
+function email(v) {
+  const e = str(v, 254, true).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new ValidationError('Enter a valid email address.');
+  return e;
+}
+
+function password(v) {
+  if (typeof v !== 'string' || v.length < 8) throw new ValidationError('Password must be at least 8 characters.');
+  if (v.length > 200) throw new ValidationError('Password is too long.');
+  return v;
+}
+
+async function handleAuth(req, res, store, action) {
+  // POST /api/auth/signup
+  if (action === 'signup' && req.method === 'POST') {
+    if (!allowAuthAttempt(req)) return send(res, 429, { error: 'Too many attempts. Please try again in a few minutes.' });
+    const body = await readJson(req);
+    const user = await store.createUser({
+      id: crypto.randomUUID(),
+      email: email(body.email),
+      name: str(body.name, 40, true),
+      passwordHash: await hashPassword(password(body.password)),
+      createdAt: new Date().toISOString(),
+    });
+    if (!user) return send(res, 409, { error: 'An account with this email already exists. Try signing in.' });
+    return send(res, 201, await startSession(store, user));
+  }
+
+  // POST /api/auth/login
+  if (action === 'login' && req.method === 'POST') {
+    if (!allowAuthAttempt(req)) return send(res, 429, { error: 'Too many attempts. Please try again in a few minutes.' });
+    const body = await readJson(req);
+    const user = await store.findUserByEmail(String(body.email || '').trim().toLowerCase());
+    const ok = user && (await verifyPassword(String(body.password || ''), user.passwordHash));
+    if (!ok) return send(res, 401, { error: 'Incorrect email or password.' });
+    return send(res, 200, await startSession(store, user));
+  }
+
+  const user = await currentUser(store, req);
+  if (!user) return send(res, 401, { error: 'Please sign in.' });
+
+  // GET /api/auth/me
+  if (action === 'me' && req.method === 'GET') return send(res, 200, { user: publicUser(user) });
+
+  // POST /api/auth/logout
+  if (action === 'logout' && req.method === 'POST') {
+    await store.deleteSession(hashToken(bearerToken(req)));
+    return send(res, 200, { ok: true });
+  }
+
+  // DELETE /api/auth/me  (account deletion)
+  if (action === 'me' && req.method === 'DELETE') {
+    await store.deleteUser(user.id);
+    return send(res, 200, { ok: true });
+  }
+
+  return send(res, 404, { error: 'not found' });
+}
 
 // ---------- validation ----------
 
@@ -87,10 +193,12 @@ function num(v, min, max, name) {
 
 class ValidationError extends Error {}
 
-function validateReview(body) {
+function validateReview(body, user) {
+  if (!body || typeof body !== 'object') throw new ValidationError('missing review');
   return {
     id: crypto.randomUUID(),
-    author: str(body.author, 40) || 'Anonymous',
+    userId: user.id,
+    author: user.name,
     overall: stars(body.overall, 'overall'),
     cleanliness: stars(body.cleanliness, 'cleanliness'),
     supplies: stars(body.supplies, 'supplies'),
@@ -157,9 +265,14 @@ async function handleApi(req, res, url) {
   const parts = url.pathname.split('/').filter(Boolean); // ['api', 'bathrooms', id?, 'reviews'?]
 
   if (parts[1] === 'health') return send(res, 200, { ok: true });
+  if (parts[1] === 'auth' && parts.length === 3) return handleAuth(req, res, store, parts[2]);
   if (parts[1] !== 'bathrooms') return send(res, 404, { error: 'not found' });
-  if (req.method === 'POST' && !allowWrite(req)) {
-    return send(res, 429, { error: 'Too many submissions. Please try again in a few minutes.' });
+
+  let user = null;
+  if (req.method === 'POST') {
+    user = await currentUser(store, req);
+    if (!user) return send(res, 401, { error: 'Sign in to add restrooms and reviews.' });
+    if (!allowWrite(req)) return send(res, 429, { error: 'Too many submissions. Please try again in a few minutes.' });
   }
 
   // GET /api/bathrooms?q=&type=&minRating=&sort=
@@ -190,7 +303,7 @@ async function handleApi(req, res, url) {
   if (parts.length === 2 && req.method === 'POST') {
     const body = await readJson(req);
     const bathroom = validateBathroom(body);
-    const review = body.review ? validateReview(body.review) : null;
+    const review = body.review ? validateReview(body.review, user) : null;
     return send(res, 201, await store.addRestroom(bathroom, review));
   }
 
@@ -202,7 +315,7 @@ async function handleApi(req, res, url) {
 
   // POST /api/bathrooms/:id/reviews
   if (parts.length === 4 && parts[3] === 'reviews' && req.method === 'POST') {
-    const review = await store.addReview(parts[2], validateReview(await readJson(req)));
+    const review = await store.addReview(parts[2], validateReview(await readJson(req), user));
     return review ? send(res, 201, review) : send(res, 404, { error: 'bathroom not found' });
   }
 

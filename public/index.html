@@ -21,6 +21,7 @@
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></symbol>
     <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.8l2.85 5.78 6.38.93-4.62 4.5 1.09 6.35L12 17.36l-5.7 3 1.09-6.35-4.62-4.5 6.38-.93z"/></symbol>
   </svg>
 
@@ -33,6 +34,9 @@
       <svg class="icon"><use href="#i-search"/></svg>
       <input id="placeSearch" type="search" placeholder="Go to a city or address" aria-label="Go to a city or address">
     </div>
+    <button id="accountBtn" class="btn account-btn" aria-label="Sign in">
+      <svg class="icon"><use href="#i-user"/></svg><span id="accountLabel">Sign in</span>
+    </button>
     <button id="addBtn" class="btn btn-primary">
       <svg class="icon"><use href="#i-plus"/></svg><span>Add restroom</span>
     </button>
@@ -128,6 +132,50 @@
         <button type="submit" class="btn btn-primary">Publish</button>
       </footer>
     </form>
+  </dialog>
+
+  <!-- Sign in / create account -->
+  <dialog id="authDialog" class="modal modal-sm">
+    <form id="authForm" class="modal-inner" novalidate>
+      <header class="modal-head">
+        <h2 id="authTitle">Sign in</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+      </header>
+      <div class="modal-body auth-body">
+        <p id="authReason" class="help"></p>
+        <label class="field" id="nameField" hidden>Name
+          <input name="name" maxlength="40" autocomplete="name" placeholder="Shown on your reviews">
+        </label>
+        <label class="field">Email
+          <input name="email" type="email" autocomplete="email" required>
+        </label>
+        <label class="field">Password
+          <input name="password" type="password" autocomplete="current-password" required minlength="8">
+        </label>
+        <p id="authError" class="error" role="alert"></p>
+        <button type="submit" class="btn btn-primary btn-block" id="authSubmit">Sign in</button>
+        <p class="auth-switch"><span id="authSwitchText">New to ToiletTime?</span>
+          <button type="button" class="btn-link" id="authSwitch">Create an account</button></p>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Account -->
+  <dialog id="accountDialog" class="modal modal-sm">
+    <div class="modal-inner">
+      <header class="modal-head">
+        <h2>Account</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+      </header>
+      <div class="modal-body account-body">
+        <span class="avatar avatar-lg" id="accountAvatar"></span>
+        <div class="account-name" id="accountName"></div>
+        <div class="muted" id="accountEmail"></div>
+        <div class="muted small" id="accountSince"></div>
+        <button type="button" class="btn btn-block" id="signOutBtn">Sign out</button>
+        <button type="button" class="btn-link danger" id="deleteAccountBtn">Delete account</button>
+      </div>
+    </div>
   </dialog>
 
   <script src="vendor/leaflet/leaflet.js"></script>
