@@ -42,6 +42,7 @@ function publicProfile(p) {
     username: p.username ?? null,
     avatarUrl: avatarUrl(p),
     markerColor: p.markerColor ?? null,
+    character: p.character ?? null,
     createdAt: p.createdAt,
   };
 }
@@ -74,6 +75,7 @@ class JsonStore {
     }
     this.profiles = data.profiles || [];
     this.bathrooms = data.bathrooms || [];
+    this.visits = data.visits || [];
     if (this.cleanUp(data)) this.save();
   }
 
@@ -100,7 +102,7 @@ class JsonStore {
   save() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ bathrooms: this.bathrooms, profiles: this.profiles }, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify({ bathrooms: this.bathrooms, profiles: this.profiles, visits: this.visits }, null, 2));
     fs.renameSync(tmp, this.file);
   }
 
@@ -228,6 +230,30 @@ class JsonStore {
     return p && publicProfile(p);
   }
 
+  /** Restrooms this person has reviewed (hidden reviews don't count). */
+  async countUserReviews(userId) {
+    let n = 0;
+    for (const b of this.bathrooms) if (b.reviews.some((r) => r.userId === userId && !r.hidden)) n++;
+    return n;
+  }
+
+  async getRestroomPoint(id) {
+    const b = this.bathrooms.find((x) => x.id === id);
+    return b ? { id: b.id, lat: b.lat, lng: b.lng, osmId: b.osmId ?? null } : null;
+  }
+
+  /** Remembers that a person was near these restrooms/places just now. */
+  async recordVisits(userId, keys, purgeBefore) {
+    const now = new Date().toISOString();
+    this.visits = this.visits.filter((v) => v.at > purgeBefore && !(v.userId === userId && keys.includes(v.key)));
+    for (const key of keys) this.visits.push({ userId, key, at: now });
+    this.save();
+  }
+
+  async hasVisit(userId, keys, since) {
+    return this.visits.some((v) => v.userId === userId && keys.includes(v.key) && v.at > since);
+  }
+
   async ensureProfile(id) {
     if (!this.profile(id)) {
       this.profiles.push({ id, username: null, markerColor: null, createdAt: new Date().toISOString() });
@@ -266,6 +292,7 @@ class JsonStore {
   /** Deletes a profile; the user's reviews stay, without their name. */
   async deleteProfile(id) {
     this.profiles = this.profiles.filter((p) => p.id !== id);
+    this.visits = this.visits.filter((v) => v.userId !== id);
     for (const b of this.bathrooms) {
       for (const r of b.reviews) if (r.userId === id) Object.assign(r, { userId: null, author: 'Former member' });
     }
@@ -303,6 +330,13 @@ const SCHEMA = `
     avatar_updated_at timestamptz,
     marker_color text,
     created_at timestamptz NOT NULL DEFAULT now()
+  );
+  ALTER TABLE profiles ADD COLUMN IF NOT EXISTS character jsonb;
+  CREATE TABLE IF NOT EXISTS visits (
+    user_id uuid NOT NULL,
+    target_key text NOT NULL,
+    visited_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, target_key)
   );
   CREATE UNIQUE INDEX IF NOT EXISTS profiles_username_idx ON profiles (lower(username)) WHERE username IS NOT NULL;
 
@@ -399,6 +433,7 @@ const toProfile = (row) =>
     id: row.id,
     username: row.username,
     markerColor: row.marker_color,
+    character: row.character,
     avatarUpdatedAt: iso(row.avatar_updated_at),
     createdAt: iso(row.created_at),
   });
@@ -556,11 +591,45 @@ class PgStore {
     return this.getProfile(id);
   }
 
+  async countUserReviews(userId) {
+    const { rows } = await this.pool.query(
+      'SELECT count(DISTINCT restroom_id)::int AS n FROM reviews WHERE user_id = $1 AND NOT hidden',
+      [userId],
+    );
+    return rows[0].n;
+  }
+
+  async getRestroomPoint(id) {
+    if (!isUuid(id)) return null;
+    const { rows } = await this.pool.query('SELECT id, lat, lng, osm_id FROM restrooms WHERE id = $1', [id]);
+    return rows[0] ? { id: rows[0].id, lat: rows[0].lat, lng: rows[0].lng, osmId: rows[0].osm_id } : null;
+  }
+
+  async recordVisits(userId, keys, purgeBefore) {
+    await this.pool.query('DELETE FROM visits WHERE visited_at < $1', [purgeBefore]);
+    for (const key of keys) {
+      await this.pool.query(
+        `INSERT INTO visits (user_id, target_key, visited_at) VALUES ($1, $2, now())
+         ON CONFLICT (user_id, target_key) DO UPDATE SET visited_at = now()`,
+        [userId, key],
+      );
+    }
+  }
+
+  async hasVisit(userId, keys, since) {
+    const { rows } = await this.pool.query(
+      'SELECT 1 FROM visits WHERE user_id = $1 AND target_key = ANY($2::text[]) AND visited_at > $3 LIMIT 1',
+      [userId, keys, since],
+    );
+    return rows.length > 0;
+  }
+
   async updateProfile(id, fields) {
     const sets = [];
     const values = [id];
     if (fields.username !== undefined) sets.push(`username = $${values.push(fields.username)}`);
     if (fields.markerColor !== undefined) sets.push(`marker_color = $${values.push(fields.markerColor)}`);
+    if (fields.character !== undefined) sets.push(`character = $${values.push(JSON.stringify(fields.character))}::jsonb`);
     if (!sets.length) return this.getProfile(id);
     try {
       const { rows } = await this.pool.query(`UPDATE profiles SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, values);
@@ -592,6 +661,7 @@ class PgStore {
       await client.query('BEGIN');
       await client.query(`UPDATE reviews SET author = 'Former member' WHERE user_id = $1`, [id]);
       await client.query('DELETE FROM profiles WHERE id = $1', [id]); // reviews keep, user_id set null
+      await client.query('DELETE FROM visits WHERE user_id = $1', [id]);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');

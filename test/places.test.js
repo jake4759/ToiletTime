@@ -124,6 +124,7 @@ test('rating a map place twice keeps a single restroom', async () => {
       body: JSON.stringify({
         osmId: placeId, name: 'Burger Spot', type: 'restaurant', lat: 28.4185, lng: -81.5815,
         review: { overall, cleanliness: 3, supplies: 3, privacy: 3 },
+        here: { lat: 28.4185, lng: -81.5815 },
       }),
     });
 

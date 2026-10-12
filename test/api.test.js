@@ -31,6 +31,7 @@ const request = (method, p, body, token) =>
   });
 const post = (p, body, token) => request('POST', p, body, token);
 const stars = { overall: 4, cleanliness: 5, supplies: 3, privacy: 4 };
+const HERE = { lat: 59.91, lng: 10.75 }; // where the test restrooms are
 let usernames = 0;
 
 /** A verified user with a username, ready to post. */
@@ -45,7 +46,7 @@ async function poster(name) {
 async function addRestroom(token, extra = {}) {
   const res = await post(
     '/api/bathrooms',
-    { name: 'Test Diner', type: 'restaurant', city: `Testville ${Date.now()}`, lat: 59.91, lng: 10.75, review: stars, ...extra },
+    { name: 'Test Diner', type: 'restaurant', city: `Testville ${Date.now()}`, lat: 59.91, lng: 10.75, review: stars, here: HERE, ...extra },
     token,
   );
   assert.strictEqual(res.status, 201);
@@ -106,9 +107,9 @@ test('reviews: one per person, listed under My Reviews, and deletable by their a
   assert.strictEqual(b.reviews[0].author, riley.username);
   assert.strictEqual(b.reviews[0].userId, riley.id);
 
-  assert.strictEqual((await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, overall: 2 }, riley.token)).status, 201);
+  assert.strictEqual((await post(`/api/bathrooms/${b.id}/reviews`, { here: HERE, ...stars, overall: 2 }, riley.token)).status, 201);
   const sam = await poster('sam');
-  await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, overall: 5 }, sam.token);
+  await post(`/api/bathrooms/${b.id}/reviews`, { here: HERE, ...stars, overall: 5 }, sam.token);
   let detail = await (await fetch(`${base}/api/bathrooms/${b.id}`)).json();
   assert.strictEqual(detail.reviewCount, 2);
   assert.strictEqual(detail.rating, 3.5);
@@ -168,11 +169,11 @@ test('rejects invalid input', async () => {
   assert.strictEqual((await post('/api/bathrooms', { name: '', lat: 0, lng: 0 }, token)).status, 400);
   assert.strictEqual((await post('/api/bathrooms', { name: 'X', lat: 200, lng: 0 }, token)).status, 400);
   const b = await addRestroom(token);
-  assert.strictEqual((await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, overall: 9 }, token)).status, 400);
+  assert.strictEqual((await post(`/api/bathrooms/${b.id}/reviews`, { here: HERE, ...stars, overall: 9 }, token)).status, 400);
   assert.strictEqual((await fetch(`${base}/api/bathrooms/nope`)).status, 404);
   const missing = '00000000-0000-4000-8000-000000000000';
   assert.strictEqual((await fetch(`${base}/api/bathrooms/${missing}`)).status, 404);
-  assert.strictEqual((await post(`/api/bathrooms/${missing}/reviews`, stars, token)).status, 404);
+  assert.strictEqual((await post(`/api/bathrooms/${missing}/reviews`, { ...stars, here: HERE }, token)).status, 404);
   assert.strictEqual((await fetch(`${base}/api/avatars/${missing}`)).status, 404);
 });
 
@@ -237,4 +238,90 @@ test('Terms and Privacy pages are served with the contact email', async () => {
     assert.match(html, /ToiletTime/);
     assert.ok(!html.includes('{{CONTACT_EMAIL}}'));
   }
+});
+
+test('you can only rate restrooms you are at, or were near in the last 24 hours', async () => {
+  const ana = await poster('ana');
+  const b = await addRestroom(ana.token); // at HERE
+  const far = { lat: 59.95, lng: 10.75 }; // about 4.5 km away
+  const near = { lat: 59.9105, lng: 10.7503 }; // about 60 m away
+
+  const bo = await poster('bo');
+  let res = await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, here: far }, bo.token);
+  assert.strictEqual(res.status, 403);
+  assert.strictEqual((await res.json()).code, 'not_visited');
+  assert.strictEqual((await post(`/api/bathrooms/${b.id}/reviews`, stars, bo.token)).status, 403);
+
+  // Adding a brand-new restroom somewhere you aren't is refused too.
+  res = await post('/api/bathrooms', { name: 'Far Cafe', lat: 59.95, lng: 10.75, review: stars, here: HERE }, bo.token);
+  assert.strictEqual(res.status, 403);
+
+  // The app reports you walked past it...
+  res = await post('/api/visits', { ...far, accuracy: 20, restroomIds: [b.id] }, bo.token);
+  assert.deepStrictEqual(await res.json(), { recorded: 0 }, 'too far away to count');
+  res = await post('/api/visits', { ...near, accuracy: 20, restroomIds: [b.id] }, bo.token);
+  assert.deepStrictEqual(await res.json(), { recorded: 1 });
+  // ...so later, from home, you can still rate it.
+  assert.strictEqual((await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, here: far }, bo.token)).status, 201);
+
+  // Places from the map count as visits too.
+  const placeId = `node/${Date.now()}`;
+  res = await post('/api/visits', { ...near, places: [{ osmId: placeId, lat: 59.9104, lng: 10.7501 }] }, bo.token);
+  assert.deepStrictEqual(await res.json(), { recorded: 1 });
+  res = await post('/api/bathrooms', { osmId: placeId, name: 'Kiosk', lat: 59.9104, lng: 10.7501, review: stars, here: far }, bo.token);
+  assert.strictEqual(res.status, 201);
+
+  assert.strictEqual((await post('/api/visits', { lat: 'x', lng: 1 }, bo.token)).status, 400);
+  assert.strictEqual((await post('/api/visits', near)).status, 401);
+});
+
+test('visits older than the review window no longer count', { skip: !!process.env.DATABASE_URL }, async () => {
+  const cy = await poster('cy');
+  const b = await addRestroom(cy.token);
+  const dee = await poster('dee');
+  await post('/api/visits', { ...HERE, restroomIds: [b.id] }, dee.token);
+  const store = await storeReady;
+  for (const v of store.visits) if (v.userId === dee.id) v.at = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+  const res = await post(`/api/bathrooms/${b.id}/reviews`, { ...stars, here: { lat: 59.95, lng: 10.75 } }, dee.token);
+  assert.strictEqual(res.status, 403);
+});
+
+test('character: starts with defaults, locked items refused, reviews unlock rewards', async () => {
+  const catalog = await (await fetch(`${base}/api/character`)).json();
+  assert.ok(catalog.slots.hat.items.some((i) => i.id === 'crown'));
+
+  const eve = await poster('eve');
+  let me = (await (await request('GET', '/api/me', undefined, eve.token)).json()).user;
+  assert.strictEqual(me.reviewCount, 0);
+  assert.strictEqual(me.level.name, 'Newbie');
+  assert.strictEqual(me.character.hat, 'none');
+  assert.deepStrictEqual(me.nextUnlock.at, 1);
+
+  let res = await request('PATCH', '/api/me', { character: { hat: 'cap' } }, eve.token);
+  assert.strictEqual(res.status, 400);
+  assert.match((await res.json()).error, /Baseball Cap unlocks after reviewing 1 restroom/);
+  assert.strictEqual((await request('PATCH', '/api/me', { character: { hat: 'sombrero' } }, eve.token)).status, 400);
+  assert.strictEqual((await request('PATCH', '/api/me', { character: { topColor: '#123456' } }, eve.token)).status, 400);
+
+  const b = await addRestroom(eve.token);
+  assert.strictEqual(b.rewards.reviewCount, 1);
+  assert.strictEqual(b.rewards.level.name, 'First Flush');
+  assert.ok(b.rewards.newItems.some((i) => i.id === 'cap'));
+
+  res = await request('PATCH', '/api/me', { character: { hat: 'cap', skin: 'skin4', topColor: '#dc2626' } }, eve.token);
+  assert.strictEqual(res.status, 200);
+  me = (await res.json()).user;
+  assert.deepStrictEqual([me.character.hat, me.character.skin, me.character.topColor], ['cap', 'skin4', '#dc2626']);
+
+  // Rating the same restroom again doesn't unlock more.
+  const again = await (await post(`/api/bathrooms/${b.id}/reviews`, { here: HERE, ...stars }, eve.token)).json();
+  assert.strictEqual(again.rewards.reviewCount, 1);
+  assert.deepStrictEqual(again.rewards.newItems, []);
+
+  // Deleting the review takes the cap back off.
+  const mine = (await (await request('GET', '/api/me/reviews', undefined, eve.token)).json()).reviews;
+  await request('DELETE', `/api/reviews/${mine[0].id}`, undefined, eve.token);
+  me = (await (await request('GET', '/api/me', undefined, eve.token)).json()).user;
+  assert.strictEqual(me.character.hat, 'none');
+  assert.strictEqual(me.character.skin, 'skin4');
 });

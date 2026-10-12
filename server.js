@@ -10,6 +10,13 @@ const { fetchPlaces, parseBbox } = require('./places');
 const { createStore, isUuid } = require('./store');
 const supabase = require('./supabase');
 const { HIDE_AFTER_REPORTS, REPORT_REASONS, isOffensiveName, maskText } = require('./moderation');
+const character = require('./character');
+
+/** You can review a restroom if you were this close to it within the review window. */
+const VISIT_RADIUS_M = Number(process.env.VISIT_RADIUS_M) || 200;
+const REVIEW_WINDOW_HOURS = Number(process.env.REVIEW_WINDOW_HOURS) || 24;
+/** Visit records are deleted after this long. */
+const VISIT_KEEP_HOURS = Math.max(48, REVIEW_WINDOW_HOURS * 2);
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -79,6 +86,7 @@ function rateLimiter(limit) {
 const allowWrite = rateLimiter(Number(process.env.WRITE_LIMIT) || 30);
 const allowProfileChange = rateLimiter(Number(process.env.PROFILE_LIMIT) || 30);
 const allowPlacesLookup = rateLimiter(Number(process.env.PLACES_LIMIT) || 300);
+const allowVisitPing = rateLimiter(Number(process.env.VISIT_LIMIT) || 200);
 
 setInterval(() => {
   const now = Date.now();
@@ -155,10 +163,73 @@ function avatarImage(body) {
   return { data, type: jpeg ? 'image/jpeg' : 'image/png' };
 }
 
+async function progress(store, userId) {
+  const reviewCount = await store.countUserReviews(userId);
+  return { reviewCount, level: character.levelFor(reviewCount), nextUnlock: character.nextUnlock(reviewCount) };
+}
+
 async function me(store, user) {
   const profile = await store.ensureProfile(user.id);
-  return { ...profile, email: user.email, emailVerified: user.emailVerified, provider: user.provider };
+  const p = await progress(store, user.id);
+  return {
+    ...profile,
+    character: character.sanitize(profile.character, p.reviewCount),
+    ...p,
+    email: user.email,
+    emailVerified: user.emailVerified,
+    provider: user.provider,
+  };
 }
+
+/** Rewards earned by a new review: level and any items it unlocked. */
+async function rewardsAfter(store, userId, before) {
+  const p = await progress(store, userId);
+  return { ...p, newItems: character.newlyUnlocked(before, p.reviewCount) };
+}
+
+// ---------- were you there? ----------
+
+function distanceM(a, b) {
+  const R = 6371e3;
+  const rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/** A reported position { lat, lng, accuracy } from the device, or null. */
+function position(v) {
+  if (!v || typeof v !== 'object') return null;
+  const lat = Number(v.lat);
+  const lng = Number(v.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  const accuracy = Math.min(Math.max(Number(v.accuracy) || 0, 0), 100); // GPS slack, capped
+  return { lat, lng, accuracy };
+}
+
+const isNear = (here, target) => !!here && distanceM(here, target) <= VISIT_RADIUS_M + here.accuracy;
+const hoursAgo = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
+
+/**
+ * Checks that the person is at the restroom now (`here`) or was near it within the review window.
+ * `target` is { lat, lng } and `keys` identify it (restroom id and/or OpenStreetMap id).
+ */
+async function requirePresence(store, userId, target, keys, here) {
+  if (isNear(here, target)) {
+    if (keys.length) await store.recordVisits(userId, keys, hoursAgo(VISIT_KEEP_HOURS));
+    return;
+  }
+  if (keys.length && (await store.hasVisit(userId, keys, hoursAgo(REVIEW_WINDOW_HOURS)))) return;
+  throw new HttpError(
+    403,
+    `You can rate restrooms you've been to in the last ${REVIEW_WINDOW_HOURS} hours. ` +
+      'Open ToiletTime while you\'re there (within about 200 m), then rate it here any time that day.',
+    'not_visited',
+  );
+}
+
+const restroomKeys = (point) => [`r:${point.id}`, ...(point.osmId ? [`osm:${point.osmId}`] : [])];
 
 async function handleMe(req, res, store, parts) {
   const user = await requireUser(req);
@@ -175,6 +246,13 @@ async function handleMe(req, res, store, parts) {
     const fields = {};
     if (body.username !== undefined) fields.username = username(body.username);
     if (body.markerColor !== undefined) fields.markerColor = markerColor(body.markerColor);
+    if (body.character !== undefined) {
+      try {
+        fields.character = character.validate(body.character, await store.countUserReviews(user.id));
+      } catch (err) {
+        throw new ValidationError(err.message);
+      }
+    }
     const result = await store.updateProfile(user.id, fields);
     if (result?.conflict) throw new HttpError(409, 'That username is taken. Try another one.');
     return send(res, 200, { user: await me(store, user) });
@@ -361,6 +439,36 @@ async function handleApi(req, res, url) {
 
   if (parts[1] === 'me') return handleMe(req, res, store, parts);
 
+  // GET /api/character  (the closet: items, what unlocks them, colors, levels)
+  if (parts[1] === 'character' && req.method === 'GET') return send(res, 200, character.catalog());
+
+  // POST /api/visits  { lat, lng, accuracy, restroomIds: [], places: [{ osmId, lat, lng }] }
+  // The app reports which restrooms you're near while it's open, so you can rate them later that day.
+  if (parts[1] === 'visits' && req.method === 'POST') {
+    const user = await requireUser(req);
+    if (!allowVisitPing(req)) return send(res, 429, { error: 'Too many location updates.' });
+    const body = await readJson(req);
+    const here = position(body);
+    if (!here) throw new ValidationError('invalid position');
+    const keys = [];
+    for (const id of Array.isArray(body.restroomIds) ? body.restroomIds.slice(0, 50) : []) {
+      const point = typeof id === 'string' && (await store.getRestroomPoint(id));
+      if (point && isNear(here, point)) keys.push(...restroomKeys(point));
+    }
+    for (const p of Array.isArray(body.places) ? body.places.slice(0, 100) : []) {
+      const at = position(p);
+      let id = null;
+      try {
+        id = osmId(p?.osmId);
+      } catch {
+        // skip malformed ids
+      }
+      if (id && at && isNear(here, at)) keys.push(`osm:${id}`);
+    }
+    if (keys.length) await store.recordVisits(user.id, [...new Set(keys)], hoursAgo(VISIT_KEEP_HOURS));
+    return send(res, 200, { recorded: new Set(keys).size });
+  }
+
   // GET /api/avatars/:userId
   if (parts[1] === 'avatars' && parts.length === 3 && req.method === 'GET') {
     const avatar = await store.getAvatar(parts[2]);
@@ -410,8 +518,10 @@ async function handleApi(req, res, url) {
   if (parts[1] !== 'bathrooms') return send(res, 404, { error: 'not found' });
 
   let profile = null;
+  let reviewsBefore = 0;
   if (req.method === 'POST') {
     ({ profile } = await requirePoster(store, req));
+    reviewsBefore = await store.countUserReviews(profile.id);
     if (!allowWrite(req)) return send(res, 429, { error: 'Too many submissions. Please try again in a few minutes.' });
   }
 
@@ -444,13 +554,22 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const bathroom = validateBathroom(body);
     const review = body.review ? validateReview(body.review, profile) : null;
+    const here = position(body.here);
     // A place from the map that someone already rated: add the review to that restroom instead.
     const existingId = bathroom.osmId && (await store.findIdByOsmId(bathroom.osmId));
     if (existingId) {
+      const point = await store.getRestroomPoint(existingId);
+      await requirePresence(store, profile.id, point, restroomKeys(point), here);
       if (review) await store.addReview(existingId, review);
-      return send(res, 200, await store.get(existingId));
+      const rewards = await rewardsAfter(store, profile.id, reviewsBefore);
+      return send(res, 200, { ...(await store.get(existingId)), rewards });
     }
-    return send(res, 201, await store.addRestroom(bathroom, review));
+    // A brand-new restroom: you have to be there (or have been near this map place today).
+    await requirePresence(store, profile.id, bathroom, bathroom.osmId ? [`osm:${bathroom.osmId}`] : [], here);
+    const created = await store.addRestroom(bathroom, review);
+    await store.recordVisits(profile.id, restroomKeys(bathroom), hoursAgo(VISIT_KEEP_HOURS));
+    const rewards = await rewardsAfter(store, profile.id, reviewsBefore);
+    return send(res, 201, { ...created, rewards });
   }
 
   // GET /api/bathrooms/:id
@@ -461,8 +580,13 @@ async function handleApi(req, res, url) {
 
   // POST /api/bathrooms/:id/reviews
   if (parts.length === 4 && parts[3] === 'reviews' && req.method === 'POST') {
-    const review = await store.addReview(parts[2], validateReview(await readJson(req), profile));
-    return review ? send(res, 201, review) : send(res, 404, { error: 'bathroom not found' });
+    const point = await store.getRestroomPoint(parts[2]);
+    if (!point) return send(res, 404, { error: 'bathroom not found' });
+    const body = await readJson(req);
+    await requirePresence(store, profile.id, point, restroomKeys(point), position(body.here));
+    const review = await store.addReview(parts[2], validateReview(body, profile));
+    if (!review) return send(res, 404, { error: 'bathroom not found' });
+    return send(res, 201, { ...review, rewards: await rewardsAfter(store, profile.id, reviewsBefore) });
   }
 
   return send(res, 405, { error: 'method not allowed' });
